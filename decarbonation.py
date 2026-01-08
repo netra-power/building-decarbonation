@@ -11,50 +11,65 @@ st.set_page_config(page_title="Décarbonation Bâtiment", layout="wide")
 st.title("Décarbonez votre site et réduisez vos couts : votre étude de faisabilité")
 
 # --- LOGIQUE PVGIS & GEOLOCALISATION ---
-def rechercher_adresses(searchterm: str):
+def rechercher_adresses(searchterm: str, pays: str):
     if not searchterm or len(searchterm) < 2:
         return []
     try:
-        # Utilisation de l'API de recherche d'adresses du gouvernement français (très rapide et précise pour la France)
-        # Et Photon pour la Suisse
         adresses = []
         
-        # 1. Test API France (Base Adresse Nationale)
-        try:
-            url_fr = "https://api-adresse.data.gouv.fr/search/"
-            params_fr = {"q": searchterm, "limit": 5}
-            res_fr = requests.get(url_fr, params=params_fr, timeout=2)
-            if res_fr.status_code == 200:
-                for f in res_fr.json().get("features", []):
-                    adresses.append(f["properties"]["label"])
-        except:
-            pass
-            
-        # 2. Test API Photon (pour la Suisse ou secours)
-        try:
-            url_ph = "https://photon.komoot.io/api/"
-            params_ph = {
-                "q": searchterm, 
-                "limit": 5, 
-                "lang": "fr"
-            }
-            res_ph = requests.get(url_ph, params=params_ph, timeout=2)
-            if res_ph.status_code == 200:
-                for f in res_ph.json().get("features", []):
-                    p = f.get("properties", {})
-                    # On ne garde que les résultats suisses ici pour compléter la BAN française
-                    if p.get("countrycode") == "CH":
-                        parts = []
-                        if p.get("housenumber"): parts.append(p["housenumber"])
-                        if p.get("street"): parts.append(p["street"])
-                        if p.get("postcode"): parts.append(p["postcode"])
-                        if p.get("city"): parts.append(p["city"])
-                        parts.append("Suisse")
+        if pays == "France":
+            # API France (Base Adresse Nationale)
+            try:
+                url_fr = "https://api-adresse.data.gouv.fr/search/"
+                params_fr = {"q": searchterm, "limit": 10}
+                res_fr = requests.get(url_fr, params=params_fr, timeout=2)
+                if res_fr.status_code == 200:
+                    for f in res_fr.json().get("features", []):
+                        adresses.append(f["properties"]["label"])
+            except:
+                pass
+        else:
+            # API Photon pour la Suisse - Version simplifiée et plus robuste
+            try:
+                url_ph = "https://photon.komoot.io/api/"
+                # On ne filtre pas par pays dans les paramètres car Photon est capricieux avec les filtres
+                params_ph = {
+                    "q": searchterm, 
+                    "limit": 15, 
+                    "lang": "fr"
+                }
+                res_ph = requests.get(url_ph, params=params_ph, timeout=3)
+                if res_ph.status_code == 200:
+                    for f in res_ph.json().get("features", []):
+                        p = f.get("properties", {})
                         
-                        full = " ".join(parts)
-                        if full: adresses.append(full)
-        except:
-            pass
+                        # Filtrage manuel strict sur le code pays CH
+                        if p.get("countrycode") == "CH":
+                            parts = []
+                            housenumber = p.get("housenumber")
+                            street = p.get("street")
+                            name = p.get("name")
+                            postcode = p.get("postcode")
+                            city = p.get("city")
+                            
+                            if housenumber: parts.append(housenumber)
+                            
+                            # Si 'street' est présent on l'utilise, sinon on prend 'name' si ce n'est pas la ville
+                            if street:
+                                parts.append(street)
+                            elif name and name != city:
+                                parts.append(name)
+                                
+                            if postcode: parts.append(postcode)
+                            if city: parts.append(city)
+                            parts.append("Suisse")
+                            
+                            full = " ".join(parts)
+                            # On s'assure qu'on a au moins une rue et une ville
+                            if len(parts) >= 3:
+                                adresses.append(full)
+            except Exception as e:
+                pass
             
         return list(dict.fromkeys(adresses))
     except Exception:
@@ -140,15 +155,20 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 if not st.session_state.adresse_validee:
-    st.sidebar.write("📍 Votre adresse")
-    # On utilise une clé dynamique pour forcer la réinitialisation de la searchbox
+    st.sidebar.info("👋 Bienvenue ! Veuillez sélectionner votre pays puis saisir votre adresse pour lancer l'étude.")
+    st.sidebar.write("🌍 **Étape 1 : Choisir le pays**")
+    pays_selectionne = st.sidebar.selectbox("Sélectionnez votre pays", ["France", "Suisse"], label_visibility="collapsed")
+    
+    st.sidebar.write("📍 **Étape 2 : Saisir l'adresse**")
     search_key = f"search_adresse_{st.session_state.get('search_version', 0)}"
-    adresse_selectionnee = st_searchbox(
-        rechercher_adresses,
-        key=search_key,
-        placeholder="Saisissez votre adresse...",
-        clear_on_submit=True,
-    )
+    # Ajout explicite du paramètre pour forcer l'affichage dans la barre latérale
+    with st.sidebar:
+        adresse_selectionnee = st_searchbox(
+            lambda t: rechercher_adresses(t, pays_selectionne),
+            key=search_key,
+            placeholder="Saisissez votre adresse...",
+            clear_on_submit=True,
+        )
     if adresse_selectionnee:
         st.session_state.adresse_validee = adresse_selectionnee
         st.rerun()
@@ -164,6 +184,7 @@ else:
 adresse = st.session_state.adresse_validee
 
 # 2. Type de toit et Matériaux
+st.sidebar.write("🏠 **Étape 3 : Caractéristiques du bâtiment**")
 type_toit = st.sidebar.selectbox("Votre type de toit", ["Plat", "Incliné"])
 
 if type_toit == "Plat":
@@ -220,7 +241,7 @@ else:
 st.header("Analyse du productible photovoltaïque")
 
 if not adresse:
-    st.info("👋 Bienvenue ! Veuillez commencer par saisir une adresse dans la barre latérale pour lancer l'étude.")
+    st.write("En attente de la saisie d'une adresse dans la barre latérale...")
 elif lat and lon:
     col1, col2 = st.columns(2)
 
