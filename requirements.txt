@@ -4,3 +4,4 @@ numpy
 requests
 geopy
 streamlit-searchbox
+plotly
