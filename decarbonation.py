@@ -226,8 +226,7 @@ st.sidebar.header("🏢 Informations du Bâtiment")
 
 # 1. Adresse avec Auto-complétion et état
 if "adresse_validee" not in st.session_state:
-    # Adresse par défaut pour le développement
-    st.session_state.adresse_validee = "1 rue du cimetiere 68730 blotzheim"
+    st.session_state.adresse_validee = None
 
 # CSS pour enlever le liseré rouge de Streamlit sur la searchbox
 st.markdown("""
@@ -466,20 +465,6 @@ elif mode_conso == "Saisie manuelle (kWh)":
             👉 {conso_annuelle_kwh:,.0f} kWh/an
         </div>
         """.replace(",", " "), unsafe_allow_html=True)
-
-# --- ÉTAPE 5 : PARAMÈTRES FINANCIERS ---
-st.sidebar.write("💰 **Étape 5 : Paramètres financiers**")
-col_p1, col_p2 = st.sidebar.columns(2)
-with col_p1:
-    prix_achat = st.number_input("Prix achat (cts/kWh)", min_value=0.0, value=25.0, step=0.5)
-with col_p2:
-    prix_vente = st.number_input("Prix vente (cts/kWh)", min_value=0.0, value=12.0, step=0.5)
-
-expander_f = st.sidebar.expander("Ratios d'investissement (CAPEX)")
-with expander_f:
-    capex_pv_kwc = st.number_input("CAPEX PV (€/kWc)", min_value=0, value=1500, step=50)
-    capex_batt_kwh = st.number_input("CAPEX Batterie (€/kWh)", min_value=0, value=800, step=50)
-
 else:
     fichier_conso = st.sidebar.file_uploader(
         "Télécharger votre courbe de charge (CSV ou Excel)",
@@ -556,6 +541,8 @@ else:
                     st.session_state.conso_calculee = conso_totale_det
         except Exception as e:
             st.sidebar.error(f"Erreur lors de la lecture du fichier : {e}")
+
+# --- ÉTAPE 5 : PARAMÈTRES FINANCIERS SUPPRIMÉS ---
 
 # Conversion kVA ou Amp en kW
 # En résidentiel/tertiaire, 1 kVA ≈ 1 kW.
@@ -923,7 +910,7 @@ if adresse:
         # --- SECTION DIMENSIONNEMENT IDÉAL (AUTONOMIE TOTALE) ---
         st.write("---")
         st.header("🌟 Dimensionnement idéal pour l'autonomie totale")
-        st.write("Ce système est calculé pour viser 100% d'autonomie en optimisant la taille du système (PV + Batterie) selon vos besoins réels, sans dépasser le potentiel de votre toiture.")
+        st.write("Ce système est calculé pour viser l'optimum technico-économique (ROI/VAN) tout en maximisant l'autonomie, sans dépasser le potentiel de votre toiture.")
 
         # 1. Calcul des profils unitaires (pour 1 kWc) par orientation
         profils_unitaires_par_pan = []
@@ -977,65 +964,62 @@ if adresse:
             objectif_trouve = False
             
             # On définit des paliers de test pour la puissance PV (max 20 paliers)
-            # On limite la recherche à une valeur raisonnable par rapport à la consommation (max 4x la puissance de couverture)
-            # pour garder une résolution fine même sur des surfaces démesurées.
             p_totale_max_toit = sum(p['p_max'] for p in profils_unitaires_par_pan)
             p_couverture_conso = conso_annuelle_kwh / productible_moyen if productible_moyen > 0 else 20.0
-            p_recherche_max = min(p_totale_max_toit, max(p_couverture_conso * 4, 10.0))
+            p_recherche_max = min(p_totale_max_toit, max(p_couverture_conso * 3, 10.0))
             
-            pas_pv = max(0.5, p_recherche_max / 20)
-            paliers_pv = [i * pas_pv for i in range(1, 21)]
-            
-            # On ajoute le max de la toiture en dernier recours
+            pas_pv = max(1.0, p_recherche_max / 15)
+            paliers_pv = [i * pas_pv for i in range(1, 16)]
             paliers_pv.append(p_totale_max_toit)
-            
-            # On s'assure que la liste est triée et sans doublons
             paliers_pv = sorted(list(set(paliers_pv)))
             
-            p_totale_max = p_totale_max_toit # Pour la distribution au prorata
+            p_totale_max = p_totale_max_toit
             
             for p_test in paliers_pv:
                 if objectif_trouve: break
                 
-                # Distribution de la puissance p_test sur les pans au prorata de leur p_max
-                ratio_pv = p_test / p_totale_max
+                # Distribution de la puissance p_test sur les pans
+                ratio_pv = p_test / p_totale_max if p_totale_max > 0 else 0
                 prod_h_test = [0.0] * 8760
                 for item in profils_unitaires_par_pan:
                     p_pan_test = item['p_max'] * ratio_pv
                     for i in range(8760):
                         prod_h_test[i] += item['profil'][i] * p_pan_test
                 
-                # Pour ce PV donné, on cherche la batterie optimale (jusqu'à 3kWh/kWc)
+                # Test de batteries (jusqu'à 3kWh/kWc)
                 cap_max_batt = p_test * 3.0
-                pas_b = max(1.0, cap_max_batt / 15)
+                pas_b = max(1.0, cap_max_batt / 20)
                 
-                last_t_auto_for_this_pv = 0.0
-                for cap_b in [i * pas_b for i in range(16)]:
+                last_t_auto_for_this_pv = 0
+                
+                for cap_b in [i * pas_b for i in range(21)]:
                     cap_utile_b = cap_b * DOD
                     s_temp = 0.0
-                    a_temp = 0
+                    a_temp_kwh = 0
                     p_batt_max_test = cap_b * C_RATE
                     
                     for ph, ch in zip(prod_h_test, courbe_conso):
                         if ph >= ch:
-                            # Surplus
-                            a_temp += ch
+                            a_temp_kwh += ch
                             dispo = ph - ch
                             charge = min(dispo, (cap_utile_b - s_temp) / RENDEMENT_CHARGE, p_batt_max_test)
                             s_temp += charge * RENDEMENT_CHARGE
                         else:
-                            # Déficit
-                            a_temp += ph
+                            a_temp_kwh += ph
                             besoin = ch - ph
                             decharge = min(besoin / RENDEMENT_DECHARGE, s_temp, p_batt_max_test)
                             s_temp -= decharge
-                            a_temp += decharge * RENDEMENT_DECHARGE
+                            a_temp_kwh += decharge * RENDEMENT_DECHARGE
                     
-                    t_auto = (a_temp / conso_annuelle_kwh * 100)
+                    t_auto = (a_temp_kwh / conso_annuelle_kwh * 100) if conso_annuelle_kwh > 0 else 0
                     
                     # Gain marginal de la batterie pour ce PV spécifique
                     gain_marginal_batt = t_auto - last_t_auto_for_this_pv
                     
+                    # Si ajouter de la batterie pour ce PV n'apporte plus rien (< 0.5%), on s'arrête pour ce PV
+                    if cap_b > 0 and gain_marginal_batt < 0.5:
+                        break
+
                     # On cherche l'amélioration par rapport au meilleur système trouvé jusque là
                     # Pour éviter le surdimensionnement PV, on n'augmente le PV que si le gain est significatif (> 0.5%)
                     gain_vs_best = t_auto - best_autoprod
@@ -1050,10 +1034,6 @@ if adresse:
                         best_pv_total = p_test
                         best_capa_batt = cap_b
                         objectif_trouve = True
-                        break
-                    
-                    # Si ajouter de la batterie pour ce PV n'apporte plus rien (< 0.5%), on passe au PV suivant
-                    if cap_b > 0 and gain_marginal_batt < 0.5:
                         break
                     
                     last_t_auto_for_this_pv = t_auto
