@@ -226,7 +226,7 @@ st.sidebar.header("🏢 Informations du Bâtiment")
 
 # 1. Adresse avec Auto-complétion et état
 if "adresse_validee" not in st.session_state:
-    st.session_state.adresse_validee = "1 rue du cimetiere 68730 blotzheim"
+    st.session_state.adresse_validee = None
 
 # CSS pour enlever le liseré rouge de Streamlit sur la searchbox
 st.markdown("""
@@ -291,7 +291,7 @@ if type_toit == "Plat":
         selection_orientations = ["Est", "Ouest"]
     
     # Pour toit plat, pas de méthode de mesure (toujours surface réelle projetée)
-    surface_dispo = st.sidebar.number_input("Surface totale (m²)", min_value=1, value=150, step=1)
+    surface_dispo = st.sidebar.number_input("Surface totale (m²)", min_value=1, value=200, step=1)
     st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {surface_dispo:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
     mode_mesure = "Surface réelle"
     
@@ -328,7 +328,7 @@ else:
             horizontal=True,
             help="**Vue aérienne** : La surface est calculée comme une projection horizontale. L'outil appliquera un correctif trigonométrique selon l'inclinaison pour obtenir la surface réelle du toit."
         )
-        surf = st.sidebar.number_input("Surface disponible (m²)", min_value=1, value=150)
+        surf = st.sidebar.number_input("Surface disponible (m²)", min_value=1, value=200)
         st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {surf:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
         donnees_pans.append({"orientation": orient, "inclinaison": incli, "surface": surf})
     else:
@@ -368,7 +368,7 @@ col_unit, col_val = st.sidebar.columns([1, 1])
 with col_unit:
     unite_intro = st.selectbox(
         "Unité", 
-        ["Ampères", "kVA"], 
+        ["kVA", "Ampères"], 
         label_visibility="collapsed",
         help="L'unité de puissance d'introduction de votre bâtiment."
     )
