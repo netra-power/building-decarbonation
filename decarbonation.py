@@ -226,7 +226,7 @@ st.sidebar.header("🏢 Informations du Bâtiment")
 
 # 1. Adresse avec Auto-complétion et état
 if "adresse_validee" not in st.session_state:
-    st.session_state.adresse_validee = None
+    st.session_state.adresse_validee = "1 rue du cimetiere 68730 blotzheim"
 
 # CSS pour enlever le liseré rouge de Streamlit sur la searchbox
 st.markdown("""
@@ -465,7 +465,32 @@ elif mode_conso == "Saisie manuelle (kWh)":
             👉 {conso_annuelle_kwh:,.0f} kWh/an
         </div>
         """.replace(",", " "), unsafe_allow_html=True)
-else:
+
+# --- ÉTAPE 5 : PARAMÈTRES FINANCIERS ---
+st.sidebar.write("💰 **Paramètres financiers**")
+col_achat, col_vente = st.sidebar.columns(2)
+with col_achat:
+    prix_achat = st.number_input("Prix Achat (€/kWh)", min_value=0.0, value=0.25, step=0.01)
+with col_vente:
+    prix_vente = st.number_input("Prix Vente (€/kWh)", min_value=0.0, value=0.05, step=0.01)
+
+duree_projet = st.sidebar.number_input("Durée de vie du projet (ans)", min_value=1, max_value=50, value=20)
+
+with st.sidebar.expander("💸 Coûts d'installation (CAPEX & OPEX)"):
+    # CAPEX
+    capex_pv_unit = st.number_input("CAPEX PV (€/kWc)", min_value=0, value=800, step=100)
+    capex_batt_unit = st.number_input("CAPEX Batterie (€/kWh)", min_value=0, value=350, step=50)
+    
+    st.markdown("---")
+    # OPEX basés sur % du CAPEX par défaut
+    st.write("**Maintenance annuelle (OPEX)**")
+    pct_opex_pv = st.slider("Maintenance PV (% du CAPEX/an)", 0.0, 5.0, 1.0, 0.1) / 100
+    opex_pv_unit = st.number_input("OPEX PV (€/kWc/an)", min_value=0.0, value=float(capex_pv_unit * pct_opex_pv), step=1.0)
+    
+    pct_opex_batt = st.slider("Maintenance Batterie (% du CAPEX/an)", 0.0, 5.0, 1.0, 0.1) / 100
+    opex_batt_unit = st.number_input("OPEX Batterie (€/kWh/an)", min_value=0.0, value=float(capex_batt_unit * pct_opex_batt), step=1.0)
+
+if mode_conso == "Télécharger une courbe de charge":
     fichier_conso = st.sidebar.file_uploader(
         "Télécharger votre courbe de charge (CSV ou Excel)",
         type=["csv", "xlsx"],
@@ -541,8 +566,6 @@ else:
                     st.session_state.conso_calculee = conso_totale_det
         except Exception as e:
             st.sidebar.error(f"Erreur lors de la lecture du fichier : {e}")
-
-# --- ÉTAPE 5 : PARAMÈTRES FINANCIERS SUPPRIMÉS ---
 
 # Conversion kVA ou Amp en kW
 # En résidentiel/tertiaire, 1 kVA ≈ 1 kW.
@@ -688,6 +711,29 @@ if adresse:
         col1, col2 = st.columns(2)
 
         with col1:
+            st.subheader("📍 Bâtiment")
+            st.write(f"**Adresse :** {adresse}")
+            
+            # Affichage Introduction
+            if unite_intro == "kVA":
+                st.write(f"**Introduction :** {intro_val:,.1f} kVA".replace(",", " "))
+            else:
+                equiv_kva = (400 * intro_val * 1.732) / 1000
+                st.write(f"**Introduction :** {intro_val:,.1f} Ampères (env. {equiv_kva:,.1f} kVA)".replace(",", " "))
+
+            # Affichage Consommation
+            if conso_annuelle_kwh > 100000:
+                st.write(f"**Consommation :** {int(round(conso_annuelle_kwh/1000)):,} MWh/an".replace(",", " "))
+            else:
+                st.write(f"**Consommation :** {conso_annuelle_kwh:,.0f} kWh/an".replace(",", " "))
+
+            st.write(f"**Toiture :** {type_toit} ({materiau})")
+            st.write(f"**Potentiel toiture :** {puissance_pv_installable:,.1f} kWc".replace(",", " "))
+            st.write("**Détail par orientation :**")
+            for d in details_pans_calcul:
+                st.write(f"- {d['orientation']} : {d['puissance']:,.1f} kWc ({d['nb_mods']:,} modules)".replace(",", " "))
+        
+        with col2:
             st.subheader("☀️ Potentiel Solaire")
             st.metric("Productible (PVGIS)", f"{productible_moyen:,.0f} kWh/kWc/an".replace(",", " "))
             
@@ -695,223 +741,121 @@ if adresse:
             st.write("**Puissance installable**")
             st.markdown(f"""
                 <div style="display: flex; align-items: baseline; gap: 10px;">
-                    <span style="font-size: 2rem; font-weight: 600;">{puissance_retenue:,.1f} kWc</span>
-                    <span style="font-size: 1rem; color: #666;">(soit {nb_modules_final:,.0f} modules de 500 Wc)</span>
+                    <span style="font-size: 1.8rem; font-weight: 600;">{puissance_retenue:,.1f} kWc</span>
+                    <span style="font-size: 0.9rem; color: #666;">(soit {int(nb_modules_final):,} modules de 500 Wc)</span>
                 </div>
                 """.replace(",", " "), unsafe_allow_html=True)
             
             st.markdown(f"""
-                <div style="font-size: 0.8rem; color: #555; background-color: #e7f3fe; padding: 10px; border-radius: 5px; border-left: 5px solid #2196F3; margin-top: 10px; margin-bottom: 15px;">
+                <div style="font-size: 0.75rem; color: #555; background-color: #e7f3fe; padding: 8px; border-radius: 5px; border-left: 5px solid #2196F3; margin-top: 5px; margin-bottom: 10px;">
                     💡 La puissance installable est le minimum entre la capacité de votre toit et la puissance de votre raccordement électrique.
                 </div>
                 """, unsafe_allow_html=True)
             st.metric("Production annuelle totale", f"{production_totale_an:,.0f} kWh/an".replace(",", " "))
+
+        # Une seule ligne continue séparatrice après les deux paragraphes
+        st.write("---")
+        
+        # Calcul du max pour harmoniser les axes Y des deux graphiques
+        # Calcul de la conso mensuelle
+        conso_mensuelle = [0.0] * 12
+        jours_par_mois = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        idx_h = 0
+        for m in range(12):
+            heures_mois = jours_par_mois[m] * 24
+            conso_mensuelle[m] = sum(courbe_conso[idx_h : idx_h + heures_mois])
+            idx_h += heures_mois
             
-            # Affichage du graphique de production mensuelle dans la colonne de gauche uniquement
-            st.write("---")
-            st.subheader("📊 Répartition mensuelle")
-            mois_noms = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"]
+        max_y_graph = max(max(conso_mensuelle) if conso_mensuelle else 0, max(prod_mensuelle_cumulee) if prod_mensuelle_cumulee else 0) * 1.1
+
+        # Nouvelles colonnes pour les graphiques côte à côte
+        col_g1, col_g2 = st.columns(2)
+        
+        with col_g1:
+            # Graphique Conso Mensuelle
+            st.markdown("<h4 style='font-size: 1.1rem; margin-bottom: 0px;'>📊 Consommation mensuelle</h4>", unsafe_allow_html=True)
+            mois_noms_loc = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"]
+            
+            df_conso_m = pd.DataFrame({
+                "Mois": mois_noms_loc,
+                "Consommation (kWh)": conso_mensuelle
+            })
+            df_conso_m["Mois"] = pd.Categorical(df_conso_m["Mois"], categories=mois_noms_loc, ordered=True)
+            
+            fig_conso = px.bar(
+                df_conso_m,
+                x="Mois",
+                y="Consommation (kWh)",
+                color_discrete_sequence=["#AED6F1"] # BLEU PASTEL
+            )
+            fig_conso.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0),
+                height=250,
+                xaxis_title=None,
+                yaxis_title="kWh",
+                yaxis_range=[0, max_y_graph],
+                font=dict(size=10)
+            )
+            st.plotly_chart(fig_conso, use_container_width=True, config={'displayModeBar': False})
+
+        with col_g2:
+            # Graphique Production Mensuelle
+            st.markdown("<h4 style='font-size: 1.1rem; margin-bottom: 0px;'>📊 Production mensuelle</h4>", unsafe_allow_html=True)
+            mois_noms_loc = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"]
             
             df_mensuel = pd.DataFrame({
-                "Mois": mois_noms,
+                "Mois": mois_noms_loc,
                 "Production (kWh)": prod_mensuelle_cumulee
             })
-            df_mensuel["Mois"] = pd.Categorical(df_mensuel["Mois"], categories=mois_noms, ordered=True)
+            df_mensuel["Mois"] = pd.Categorical(df_mensuel["Mois"], categories=mois_noms_loc, ordered=True)
             
-            fig = px.bar(
+            fig_prod = px.bar(
                 df_mensuel, 
                 x="Mois", 
                 y="Production (kWh)",
                 color_discrete_sequence=["#F7DC6F"] # JAUNE PASTEL
             )
-            fig.update_layout(
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=300,
+            fig_prod.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0),
+                height=250,
                 xaxis_title=None,
-                yaxis_title="kWh"
+                yaxis_title="kWh",
+                yaxis_range=[0, max_y_graph],
+                font=dict(size=10)
             )
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-
-        with col2:
-            st.subheader("📍 Bâtiment")
-            st.write(f"**Adresse :** {adresse}")
-            
-            # Affichage Introduction
-            if unite_intro == "kVA":
-                st.write(f"**Introduction :** {intro_val} kVA")
-            else:
-                equiv_kva = (400 * intro_val * 1.732) / 1000
-                st.write(f"**Introduction :** {intro_val} Ampères (env. {equiv_kva:.1f} kVA)")
-
-            # Affichage Consommation
-            if conso_annuelle_kwh > 100000:
-                st.write(f"**Consommation annuelle :** {int(round(conso_annuelle_kwh/1000))} MWh/an")
-            else:
-                st.write(f"**Consommation annuelle :** {conso_annuelle_kwh:,.0f} kWh/an")
-
-            st.write(f"**Toiture :** {type_toit} ({materiau})")
-            if type_toit == "Plat":
-                pass
-            st.write(f"**Potentiel toiture :** {puissance_pv_installable:,.1f} kWc".replace(",", " "))
-            st.write("**Détail par orientation :**")
-            for d in details_pans_calcul:
-                st.write(f"- {d['orientation']} : {d['puissance']:,.1f} kWc ({d['nb_mods']:,} modules)".replace(",", " "))
+            st.plotly_chart(fig_prod, use_container_width=True, config={'displayModeBar': False})
 
         # --- SECTION AUTOCONSOMMATION ---
         st.write("---")
         st.header("⚡ Analyse de l'autoconsommation")
         
-        st.write("**Bâtiment avec installation photovoltaïque seule**")
+        st.write("**En exploitant la totalité de votre toiture**")
         col_res1, col_res2, col_res3 = st.columns(3)
-        col_res1.metric("Autoconsommation", f"{taux_autoconsommation:.1f} %", help="Part de la production PV consommée sur place.")
-        col_res2.metric("Autoproduction", f"{taux_autoproduction:.1f} %", help="Part de la consommation totale couverte par le PV.")
+        col_res1.metric("Autoconsommation", f"{taux_autoconsommation:,.1f} %".replace(",", " "), help="Part de la production PV consommée sur place.")
+        col_res2.metric("Autoproduction", f"{taux_autoproduction:,.1f} %".replace(",", " "), help="Part de la consommation totale couverte par le PV.")
         col_res3.metric("Surplus rejeté", f"{surplus_injecte_kwh:,.0f} kWh".replace(",", " "), help="Énergie réinjectée sur le réseau.")
         
-        activer_batterie = st.toggle("Simuler un système de stockage", value=False)
+        # --- SECTION SYSTÈME IDÉAL ---
+        st.write("---")
+        st.header("🏆 Votre système photovoltaïque et stockage idéal")
         
-        capa_batterie = 0.0
-        autoconsommation_finale_kwh = autoconsommation_kwh
-        surplus_final_kwh = surplus_injecte_kwh
-        liste_soc = [0.0] * 8760
-        liste_charge = [0.0] * 8760
-        liste_decharge = [0.0] * 8760
+        # --- NOUVEAU : CHOIX DU MODE ET SAISIE MANUELLE ---
+        c_mode1, c_mode2 = st.columns(2)
+        with c_mode1:
+            mode_ideal = st.radio(
+                "Objectif du système",
+                ["Favoriser le meilleur compromis financier (VAN)", "Favoriser l'autonomie du site"],
+                horizontal=True
+            )
+        with c_mode2:
+            override_ideal = st.checkbox("Tester manuellement une configuration", value=False)
         
         # Paramètres batteries par défaut
         DOD = 0.90  # Profondeur de décharge (90%)
         RENDEMENT_CHARGE = 0.95
         RENDEMENT_DECHARGE = 0.95
         C_RATE = 0.5  # Puissance max = 0.5 * Capacité (Système 2h)
-
-        if activer_batterie:
-            st.write("**Bâtiment avec installation photovoltaïque et batterie**")
-            
-            # --- CALCUL DE L'OPTIMUM DE BATTERIE PAR INTERPOLATION ---
-            with st.spinner("Optimisation de la batterie selon vos objectifs (100% Autonomie)..."):
-                # On teste une plage plus large pour viser l'autonomie totale
-                pas = puissance_retenue * 0.3
-                test_caps = [i * pas for i in range(1, 21)] # On teste 20 points jusqu'à 6x la puissance PV
-                resultats_test = []
-                
-                for cap in test_caps:
-                    cap_utile = cap * DOD
-                    temp_soc = 0.0
-                    temp_auto_kwh = 0
-                    p_batt_max = cap * C_RATE
-                    for p, c in zip(prod_horaire_cumulee, courbe_conso):
-                        if p >= c:
-                            temp_auto_kwh += c
-                            surplus = p - c
-                            # On charge la batterie : limitée par surplus, place utile ET puissance batterie
-                            # On considère que p_batt_max est la puissance côté AC/onduleur
-                            charge_possible = min(surplus, (cap_utile - temp_soc) / RENDEMENT_CHARGE, p_batt_max)
-                            temp_soc += charge_possible * RENDEMENT_CHARGE
-                        else:
-                            temp_auto_kwh += p
-                            besoin = c - p
-                            # On décharge la batterie : limitée par besoin, stock utile ET puissance batterie
-                            decharge_possible = min(besoin / RENDEMENT_DECHARGE, temp_soc, p_batt_max)
-                            temp_soc -= decharge_possible
-                            temp_auto_kwh += decharge_possible * RENDEMENT_DECHARGE
-                    resultats_test.append(temp_auto_kwh)
-                
-                # Identification de l'optimum selon la hiérarchie d'objectifs
-                optimum_val = 0.0
-                objectif_atteint = ""
-                
-                for i in range(len(resultats_test)):
-                    cap = test_caps[i]
-                    gain = resultats_test[i]
-                    
-                    t_prod = (gain / conso_annuelle_kwh * 100) if conso_annuelle_kwh > 0 else 0
-                    t_cons = (gain / production_totale_an * 100) if production_totale_an > 0 else 0
-                    
-                    # 1. Optimum de rendement marginal (On s'arrête si ajouter de la batterie rapporte moins de 0.5% d'autoproduction)
-                    if i > 0:
-                        gain_marginal = (resultats_test[i] - resultats_test[i-1]) / conso_annuelle_kwh * 100 if conso_annuelle_kwh > 0 else 0
-                        if gain_marginal < 0.5:
-                            optimum_val = test_caps[i-1]
-                            objectif_atteint = "⚖️ Optimum de rendement identifié : Au-delà de cette capacité, l'ajout de batterie devient peu rentable."
-                            break
-
-                    # 2. Priorité : 100% Autoproduction (Autonomie)
-                    if t_prod >= 99.0:
-                        optimum_val = cap
-                        objectif_atteint = "🌟 Objectif 100% Autoproduction atteint : Votre bâtiment est désormais totalement autonome."
-                        break
-                    
-                    # 3. Seconde priorité : 100% Autoconsommation (Zéro Rejet)
-                    if t_cons >= 99.0:
-                        optimum_val = cap
-                        objectif_atteint = "✅ Objectif 100% Autoconsommation atteint : Vous consommez l'intégralité de votre production solaire."
-                        break
-                    
-                    optimum_val = cap
-                    objectif_atteint = "⚠️ Limite technique atteinte : La production solaire est insuffisante pour charger une plus grosse batterie."
-
-                suggestion_batterie = round(optimum_val, 1)
-
-            c_capa, c_info = st.columns([1, 2])
-            with c_capa:
-                capa_batterie = st.number_input("Capacité optimale (kWh) 🔋", min_value=0.0, value=float(int(suggestion_batterie)), step=1.0)
-            
-            with c_info:
-                st.info(f"{objectif_atteint}\n\nCapacité recommandée : **{int(suggestion_batterie):,} kWh**".replace(",", " "))
-            
-            # Simulation batterie finale avec la valeur choisie
-            soc = 0.0 # State of Charge
-            cap_utile_finale = capa_batterie * DOD
-            autoconsommation_finale_kwh = 0
-            surplus_final_kwh = 0
-            liste_soc = []
-            liste_charge = []
-            liste_decharge = []
-            
-            # Puissance de batterie (Système 2h par défaut : 0.5C)
-            p_batt_max = capa_batterie * C_RATE
-            
-            for p, c in zip(prod_horaire_cumulee, courbe_conso):
-                current_charge = 0
-                current_decharge = 0
-                if p >= c:
-                    # Surplus de production
-                    autoconsommation_finale_kwh += c
-                    dispo_pour_batterie = p - c
-                    # Charge : limitée par surplus, place utile ET puissance batterie
-                    charge = min(dispo_pour_batterie, (cap_utile_finale - soc) / RENDEMENT_CHARGE, p_batt_max)
-                    soc += charge * RENDEMENT_CHARGE
-                    current_charge = charge
-                    surplus_final_kwh += (dispo_pour_batterie - charge)
-                else:
-                    # Déficit de production
-                    autoconsommation_finale_kwh += p
-                    besoin = c - p
-                    # Décharge : limitée par besoin, stock utile ET puissance batterie
-                    decharge = min(besoin / RENDEMENT_DECHARGE, soc, p_batt_max)
-                    soc -= decharge
-                    current_decharge = decharge * RENDEMENT_DECHARGE
-                    autoconsommation_finale_kwh += current_decharge
-                liste_soc.append(soc)
-                liste_charge.append(current_charge)
-                liste_decharge.append(current_decharge)
-            
-            taux_autoconsommation_final = (autoconsommation_finale_kwh / production_totale_an * 100) if production_totale_an > 0 else 0
-            taux_autoproduction_final = (autoconsommation_finale_kwh / conso_annuelle_kwh * 100) if conso_annuelle_kwh > 0 else 0
-            
-            # Affichage des métriques batterie
-            col_batt1, col_batt2, col_batt3 = st.columns(3)
-            col_batt1.metric("Autoconsommation", f"{taux_autoconsommation_final:.1f} %", delta=f"{taux_autoconsommation_final - taux_autoconsommation:.1f} %")
-            col_batt2.metric("Autoproduction", f"{taux_autoproduction_final:.1f} %", delta=f"{taux_autoproduction_final - taux_autoproduction:.1f} %")
-            col_batt3.metric("Surplus", f"{surplus_final_kwh:,.0f} kWh".replace(",", " "), delta=f"{surplus_final_kwh - surplus_injecte_kwh:,.0f} kWh".replace(",", " "), delta_color="inverse")
-
-        else:
-            taux_autoconsommation_final = taux_autoconsommation
-            taux_autoproduction_final = taux_autoproduction
-
-        # --- SECTION DIMENSIONNEMENT IDÉAL (AUTONOMIE TOTALE) ---
-        st.write("---")
-        st.header("🌟 Dimensionnement idéal pour l'autonomie totale")
-        st.write("Ce système est calculé pour viser l'optimum technico-économique (ROI/VAN) tout en maximisant l'autonomie, sans dépasser le potentiel de votre toiture.")
-
+        
         # 1. Calcul des profils unitaires (pour 1 kWc) par orientation
         profils_unitaires_par_pan = []
         for pan in donnees_pans:
@@ -953,96 +897,164 @@ if adresse:
                     "p_max": p_pan_max
                 })
 
-        # 2. Recherche du dimensionnement PV + Batterie optimal
-        # On va tester différentes tailles de PV (de 10% à 100% du max)
-        # Et pour chaque taille, chercher la batterie idéale.
-        
+        # 2. Recherche du dimensionnement PV + Batterie optimal (Autonomie & Rentabilité)
         if profils_unitaires_par_pan and conso_annuelle_kwh > 0:
+            best_autoprod_score = -float('inf')
             best_pv_total = 0
             best_capa_batt = 0
-            best_autoprod = 0
-            objectif_trouve = False
+            best_gain_annuel = 0
+            best_capex = 0
+            best_taux_auto_config = 0
+            best_taux_prod_config = 0
+            best_surplus_config = 0
+            best_van = 0
             
-            # On définit des paliers de test pour la puissance PV (max 20 paliers)
+            # On définit des paliers de test pour la puissance PV
             p_totale_max_toit = sum(p['p_max'] for p in profils_unitaires_par_pan)
             p_couverture_conso = conso_annuelle_kwh / productible_moyen if productible_moyen > 0 else 20.0
-            p_recherche_max = min(p_totale_max_toit, max(p_couverture_conso * 3, 10.0))
+            # Recherche d'un compromis : on teste une plage large autour des besoins
+            # On ne dépasse pas 15x la couverture de conso ou la surface max
+            p_recherche_max = min(p_totale_max_toit, max(p_couverture_conso * 2.5, 100.0))
             
-            pas_pv = max(1.0, p_recherche_max / 15)
-            paliers_pv = [i * pas_pv for i in range(1, 16)]
-            paliers_pv.append(p_totale_max_toit)
-            paliers_pv = sorted(list(set(paliers_pv)))
+            pas_pv = max(0.5, p_recherche_max / 30)
+            paliers_pv = [i * pas_pv for i in range(1, 31)]
+            paliers_pv.append(p_recherche_max)
+            paliers_pv = sorted(list(set([p for p in paliers_pv if p <= p_totale_max_toit])))
             
-            p_totale_max = p_totale_max_toit
-            
-            for p_test in paliers_pv:
-                if objectif_trouve: break
-                
-                # Distribution de la puissance p_test sur les pans
-                ratio_pv = p_test / p_totale_max if p_totale_max > 0 else 0
-                prod_h_test = [0.0] * 8760
-                for item in profils_unitaires_par_pan:
-                    p_pan_test = item['p_max'] * ratio_pv
-                    for i in range(8760):
-                        prod_h_test[i] += item['profil'][i] * p_pan_test
-                
-                # Test de batteries (jusqu'à 3kWh/kWc)
-                cap_max_batt = p_test * 3.0
-                pas_b = max(1.0, cap_max_batt / 20)
-                
-                last_t_auto_for_this_pv = 0
-                
-                for cap_b in [i * pas_b for i in range(21)]:
-                    cap_utile_b = cap_b * DOD
-                    s_temp = 0.0
-                    a_temp_kwh = 0
-                    p_batt_max_test = cap_b * C_RATE
+            with st.spinner("Calcul du dimensionnement idéal..."):
+                for p_test in paliers_pv:
+                    ratio_pv = p_test / p_totale_max_toit if p_totale_max_toit > 0 else 0
+                    prod_h_test = [0.0] * 8760
+                    for item in profils_unitaires_par_pan:
+                        p_pan_test = item['p_max'] * ratio_pv
+                        for i in range(8760):
+                            prod_h_test[i] += item['profil'][i] * p_pan_test
                     
-                    for ph, ch in zip(prod_h_test, courbe_conso):
-                        if ph >= ch:
-                            a_temp_kwh += ch
-                            dispo = ph - ch
-                            charge = min(dispo, (cap_utile_b - s_temp) / RENDEMENT_CHARGE, p_batt_max_test)
-                            s_temp += charge * RENDEMENT_CHARGE
+                    # Test de batteries : max ratio 2:1 entre Stockage et PV (kWh = 2 * kWc)
+                    cap_max_batt = p_test * 2.0 # Brider à 2h (Système 0.5C)
+                    pas_b = max(1.0, cap_max_batt / 15)
+                    paliers_batt = [i * pas_b for i in range(16)]
+                    
+                    last_t_prod = 0
+                    for cap_b in paliers_batt:
+                        cap_utile_b = cap_b * DOD
+                        s_temp = 0.0
+                        auto_temp_kwh = 0
+                        p_batt_max_test = cap_b * C_RATE
+                        
+                        for ph, ch in zip(prod_h_test, courbe_conso):
+                            if ph >= ch:
+                                auto_temp_kwh += ch
+                                dispo = ph - ch
+                                charge = min(dispo, (cap_utile_b - s_temp) / RENDEMENT_CHARGE, p_batt_max_test)
+                                s_temp += charge * RENDEMENT_CHARGE
+                            else:
+                                auto_temp_kwh += ph
+                                besoin = ch - ph
+                                decharge = min(besoin / RENDEMENT_DECHARGE, s_temp, p_batt_max_test)
+                                s_temp -= decharge
+                                auto_temp_kwh += decharge * RENDEMENT_DECHARGE
+                        
+                        prod_annuelle_test = sum(prod_h_test)
+                        t_prod = (auto_temp_kwh / conso_annuelle_kwh * 100) if conso_annuelle_kwh > 0 else 0
+                        t_auto = (auto_temp_kwh / prod_annuelle_test * 100) if prod_annuelle_test > 0 else 0
+                        surplus_test = max(0, prod_annuelle_test - auto_temp_kwh)
+                        
+                        # Calcul financier avec OPEX
+                        gain_annuel_brut = (auto_temp_kwh * prix_achat) + (surplus_test * prix_vente)
+                        opex_annuel = (p_test * opex_pv_unit) + (cap_b * opex_batt_unit)
+                        gain_annuel_net = gain_annuel_brut - opex_annuel
+                        capex_test = (p_test * capex_pv_unit) + (cap_b * capex_batt_unit)
+                        
+                        # Calcul financier : Valeur Actuelle Nette (VAN)
+                        gain_cumule = gain_annuel_net * duree_projet
+                        van_test = gain_cumule - capex_test
+                        
+                        # Score : on privilégie la VAN ou l'Autonomie selon le mode
+                        if mode_ideal == "Favoriser l'autonomie du site":
+                            # Bonus massif à l'autoproduction
+                            score = (t_prod * 1000) + van_test
                         else:
-                            a_temp_kwh += ph
-                            besoin = ch - ph
-                            decharge = min(besoin / RENDEMENT_DECHARGE, s_temp, p_batt_max_test)
-                            s_temp -= decharge
-                            a_temp_kwh += decharge * RENDEMENT_DECHARGE
-                    
-                    t_auto = (a_temp_kwh / conso_annuelle_kwh * 100) if conso_annuelle_kwh > 0 else 0
-                    
-                    # Gain marginal de la batterie pour ce PV spécifique
-                    gain_marginal_batt = t_auto - last_t_auto_for_this_pv
-                    
-                    # Si ajouter de la batterie pour ce PV n'apporte plus rien (< 0.5%), on s'arrête pour ce PV
-                    if cap_b > 0 and gain_marginal_batt < 0.5:
-                        break
+                            # Priorité à la VAN avec un léger bonus pour l'autonomie pour les égalités
+                            score = van_test + (t_prod * 50) 
+                        
+                        # Arrêt si gain marginal batterie < 0.2% (plus fin)
+                        if cap_b > 0 and (t_prod - last_t_prod) < 0.2:
+                            break
+                        last_t_prod = t_prod
 
-                    # On cherche l'amélioration par rapport au meilleur système trouvé jusque là
-                    # Pour éviter le surdimensionnement PV, on n'augmente le PV que si le gain est significatif (> 0.5%)
-                    gain_vs_best = t_auto - best_autoprod
-                    
-                    if gain_vs_best > 0.5:
-                        best_autoprod = t_auto
-                        best_pv_total = p_test
-                        best_capa_batt = cap_b
-                    
-                    if t_auto >= 99.0:
-                        best_autoprod = t_auto
-                        best_pv_total = p_test
-                        best_capa_batt = cap_b
-                        objectif_trouve = True
-                        break
-                    
-                    last_t_auto_for_this_pv = t_auto
+                        if score > best_autoprod_score:
+                            best_autoprod_score = score
+                            best_pv_total = p_test
+                            best_capa_batt = cap_b
+                            best_gain_annuel = gain_annuel_net
+                            best_capex = capex_test
+                            best_taux_auto_config = t_auto
+                            best_taux_prod_config = t_prod
+                            best_surplus_config = surplus_test
+                            best_van = van_test
+                        
+                        # Si on atteint 100% d'autoproduction, on continue de tester pour voir si une plus grosse batterie améliore encore la VAN (peu probable mais possible)
+                        # On ne break plus systématiquement à 99% car on veut l'optimum financier
+                
+                # On ne break pas non plus prématurément sur le PV si l'objectif est financier
+                # if best_taux_prod_config >= 99.0:
+                #     break
             
+            # --- WIDGETS DE SAISIE MANUELLE ---
+            if override_ideal:
+                c_manual1, c_manual2 = st.columns(2)
+                with c_manual1:
+                    manual_pv = st.number_input("Puissance PV manuelle (kWc)", min_value=0.0, max_value=p_totale_max_toit, value=min(best_pv_total, p_totale_max_toit), step=1.0)
+                with c_manual2:
+                    manual_batt = st.number_input("Stockage manuel (kWh) 🔋", min_value=0, value=int(best_capa_batt), step=1)
+                
+                # Recalcul des performances pour la saisie manuelle
+                best_pv_total = manual_pv
+                best_capa_batt = manual_batt
+                
+                ratio_pv_m = best_pv_total / p_totale_max_toit if p_totale_max_toit > 0 else 0
+                prod_h_m = [0.0] * 8760
+                for item in profils_unitaires_par_pan:
+                    p_pan_m = item['p_max'] * ratio_pv_m
+                    for i in range(8760):
+                        prod_h_m[i] += item['profil'][i] * p_pan_m
+                
+                soc_m = 0.0
+                cap_utile_m = best_capa_batt * DOD
+                p_batt_max_m = best_capa_batt * C_RATE
+                auto_m_kwh = 0
+                for ph, ch in zip(prod_h_m, courbe_conso):
+                    if ph >= ch:
+                        auto_m_kwh += ch
+                        dispo = ph - ch
+                        charge = min(dispo, (cap_utile_m - soc_m) / RENDEMENT_CHARGE, p_batt_max_m)
+                        soc_m += charge * RENDEMENT_CHARGE
+                    else:
+                        auto_m_kwh += ph
+                        besoin = ch - ph
+                        decharge = min(besoin / RENDEMENT_DECHARGE, soc_m, p_batt_max_m)
+                        soc_m -= decharge
+                        auto_m_kwh += decharge * RENDEMENT_DECHARGE
+                
+                prod_an_m = sum(prod_h_m)
+                best_taux_prod_config = (auto_m_kwh / conso_annuelle_kwh * 100) if conso_annuelle_kwh > 0 else 0
+                best_taux_auto_config = (auto_m_kwh / prod_an_m * 100) if prod_an_m > 0 else 0
+                best_surplus_config = max(0, prod_an_m - auto_m_kwh)
+                
+                # Financier manuel
+                gain_annuel_brut_m = (auto_m_kwh * prix_achat) + (best_surplus_config * prix_vente)
+                opex_annuel_m = (best_pv_total * opex_pv_unit) + (best_capa_batt * opex_batt_unit)
+                best_gain_annuel = gain_annuel_brut_m - opex_annuel_m
+                best_capex = (best_pv_total * capex_pv_unit) + (best_capa_batt * capex_batt_unit)
+                best_van = (best_gain_annuel * duree_projet) - best_capex
+
             aug_intro_ideale = max(0.0, best_pv_total - puissance_intro_kw)
             
-            ci1, ci2, ci3 = st.columns(3)
-            ci1.metric("Puissance PV Idéale", f"{best_pv_total:,.1f} kWc".replace(",", " "), help="Puissance PV minimale nécessaire pour atteindre l'optimum technique.")
-            ci2.metric("Stockage Idéal", f"{int(best_capa_batt):,} kWh".replace(",", " "), help="Capacité de batterie couplée à la puissance PV idéale.")
+            # --- AFFICHAGE MÉTRIQUES IDÉALES ---
+            c_id1, c_id2, c_id3 = st.columns(3)
+            c_id1.metric("Puissance PV Idéale", f"{best_pv_total:,.1f} kWc".replace(",", " "), help="Puissance PV optimisant l'indépendance énergétique et la rentabilité.")
+            c_id2.metric("Stockage Idéal", f"{int(best_capa_batt):,} kWh".replace(",", " "), help="Capacité de batterie limitée à un ratio 2:1 avec la puissance PV (Système 0.5C).")
             
             if aug_intro_ideale > 0:
                 if unite_intro == "kVA":
@@ -1050,19 +1062,51 @@ if adresse:
                 else:
                     amp_aug = (aug_intro_ideale * 1000) / (400 * 1.732)
                     label_aug = f"+{amp_aug:,.1f} A".replace(",", " ")
-                ci3.metric("Augmentation d'intro", label_aug, delta=f"Besoin de {best_pv_total:,.1f} kW au total".replace(",", " "), delta_color="inverse")
+                c_id3.metric("Augmentation d'intro", label_aug, delta=f"Besoin de {best_pv_total:,.1f} kW au total".replace(",", " "), delta_color="inverse")
             else:
-                ci3.metric("Augmentation d'intro", "Aucune", help="Votre introduction actuelle est suffisante pour ce système idéal.")
+                c_id3.metric("Augmentation d'intro", "Aucune")
+
+            # --- NOUVELLE LIGNE DE PERFORMANCE IDÉALE ---
+            st.write("#### ⚡ Performance du système idéal")
             
-            if best_autoprod < 99.0:
-                st.warning(f"⚠️ Même avec le plein potentiel de votre toiture, l'autonomie totale (100%) est difficile à atteindre. Maximum possible : {best_autoprod:.1f}% d'autoproduction.")
-            else:
-                st.success(f"✅ Objectif 100% Autoproduction atteint avec {best_pv_total:.1f} kWc et {int(best_capa_batt):,} kWh.".replace(",", " "))
+            # Calcul des gains par rapport à la section 2 (PV seul au max du toit)
+            gain_auto_prod = best_taux_prod_config - taux_autoproduction
+            gain_auto_conso = best_taux_auto_config - taux_autoconsommation
+            diff_surplus = best_surplus_config - surplus_injecte_kwh
+            
+            cp1, cp2, cp3 = st.columns(3)
+            cp1.metric(
+                "Autoconsommation", 
+                f"{best_taux_auto_config:,.1f} %".replace(",", " "), 
+                delta=f"{gain_auto_conso:+.1f} %"
+            )
+            cp2.metric(
+                "Autoproduction", 
+                f"{best_taux_prod_config:,.1f} %".replace(",", " "), 
+                delta=f"{gain_auto_prod:+.1f} %"
+            )
+            cp3.metric(
+                "Surplus rejeté", 
+                f"{best_surplus_config:,.0f} kWh".replace(",", " "), 
+                delta=f"{diff_surplus:,.0f} kWh".replace(",", " "), 
+                delta_color="inverse"
+            )
+
+            # --- RENTABILITÉ FINANCIÈRE ---
+            st.write("#### 💰 Rentabilité du système idéal")
+            roi = best_capex / best_gain_annuel if best_gain_annuel > 0 else 0
+            van_finale = (best_gain_annuel * duree_projet) - best_capex
+            
+            cr1, cr2, cr3, cr4 = st.columns(4)
+            cr1.metric("Investissement (CAPEX)", f"{int(best_capex):,} €".replace(",", " "))
+            cr2.metric("Gain annuel net", f"{int(best_gain_annuel):,} €/an".replace(",", " "), help="Calculé après déduction des OPEX annuels.")
+            cr3.metric("Temps de retour (ROI)", f"{roi:,.1f} ans".replace(",", " "))
+            cr4.metric(f"VAN (sur {duree_projet} ans)", f"{int(best_van):,} €".replace(",", " "), help="Valeur Actuelle Nette : Gain total cumulé moins l'investissement initial.")
 
             # --- ANALYSE DE LA SOLLICITATION DE LA BATTERIE IDÉALE ---
             if best_capa_batt > 0:
                 # On doit recalculer les flux pour le système idéal pour le graphique
-                ratio_pv_ideal = best_pv_total / p_totale_max if p_totale_max > 0 else 0
+                ratio_pv_ideal = best_pv_total / p_totale_max_toit if p_totale_max_toit > 0 else 0
                 prod_h_ideal = [0.0] * 8760
                 for item in profils_unitaires_par_pan:
                     p_pan_ideal = item['p_max'] * ratio_pv_ideal
@@ -1094,15 +1138,20 @@ if adresse:
                     liste_decharge_i.append(c_decharge)
 
                 st.write("---")
-                st.subheader("Sollicitation de la batterie (Système idéal)")
+                st.subheader("Sollicitation de la batterie")
                 
+                total_charge_i = sum(liste_charge_i)
                 total_decharge_i = sum(liste_decharge_i)
                 cycles_complets_i = total_decharge_i / best_capa_batt if best_capa_batt > 0 else 0
-                remplissage_moyen_i = (sum(liste_soc_i) / len(liste_soc_i)) / cap_utile_i * 100 if cap_utile_i > 0 else 0
                 
-                c_sol1, c_sol2 = st.columns(2)
-                c_sol1.metric("Cycles complets / an", f"{int(round(cycles_complets_i))}")
-                c_sol2.metric("Remplissage moy / jour", f"{remplissage_moyen_i:.1f} %")
+                # Calcul des % de charge et décharge moyens journaliers
+                pct_charge_journalier = (total_charge_i / 365) / best_capa_batt * 100 if best_capa_batt > 0 else 0
+                pct_decharge_journalier = (total_decharge_i / 365) / best_capa_batt * 100 if best_capa_batt > 0 else 0
+                
+                c_sol1, c_sol2, c_sol3 = st.columns(3)
+                c_sol1.metric("Cycles complets / an", f"{int(round(cycles_complets_i)):,}".replace(",", " "), help="Nombre de fois où la capacité totale de la batterie est déchargée en une année.")
+                c_sol2.metric("% Charge moyen journalier", f"{pct_charge_journalier:.1f} %", help="Pourcentage moyen de la capacité de la batterie chargé chaque jour.")
+                c_sol3.metric("% Décharge moyen journalier", f"{pct_decharge_journalier:.1f} %", help="Pourcentage moyen de la capacité de la batterie déchargé chaque jour.")
                 
                 st.write("**Flux journaliers cumulés (kWh/jour)**")
                 
@@ -1141,15 +1190,67 @@ if adresse:
             st.error("Impossible de calculer le gisement solaire ou la consommation est nulle.")
 
         # --- GRAPHIQUE DE SUPERPOSITION ---
+        st.write("---")
+        st.header("📈 Comparaison Production vs Consommation")
         
+        # On utilise les flux du système idéal/manuel s'ils existent
         dates = pd.date_range(start="2024-01-01", periods=8760, freq="H")
+        
+        # Par défaut, on affiche le PV de la section 2
+        p_plot = prod_horaire_cumulee
+        c_plot = courbe_conso
+        ch_plot = [0.0] * 8760
+        de_plot = [0.0] * 8760
+        
+        # Si on est dans la section 3 (Système idéal/manuel), on écrase avec ses données
+        if 'prod_h_ideal' in locals():
+            p_plot = prod_h_ideal
+            if 'liste_charge_i' in locals():
+                ch_plot = liste_charge_i
+                de_plot = liste_decharge_i
+        elif 'prod_h_m' in locals():
+            p_plot = prod_h_m
+            if 'liste_charge_m' in locals(): # On devrait s'assurer que m est défini
+                # (Dans le code précédent, m était utilisé pour manuel)
+                pass
+
+        # Pour plus de sécurité et de cohérence, on va recalculer les flux ici 
+        # pour la configuration ACTUELLE affichée (best_pv_total, best_capa_batt)
+        if 'best_pv_total' in locals() and best_pv_total > 0:
+            ratio_pv_final = best_pv_total / p_totale_max_toit if p_totale_max_toit > 0 else 0
+            p_plot = [0.0] * 8760
+            for item in profils_unitaires_par_pan:
+                p_pan_f = item['p_max'] * ratio_pv_final
+                for i in range(8760):
+                    p_plot[i] += item['profil'][i] * p_pan_f
+            
+            if best_capa_batt > 0:
+                soc_f = 0.0
+                cap_utile_f = best_capa_batt * DOD
+                p_batt_max_f = best_capa_batt * C_RATE
+                ch_plot = []
+                de_plot = []
+                for ph, ch in zip(p_plot, courbe_conso):
+                    charge_f = 0
+                    dech_f = 0
+                    if ph >= ch:
+                        dispo = ph - ch
+                        charge_f = min(dispo, (cap_utile_f - soc_f) / RENDEMENT_CHARGE, p_batt_max_f)
+                        soc_f += charge_f * RENDEMENT_CHARGE
+                    else:
+                        besoin = ch - ph
+                        dech_f = min(besoin / RENDEMENT_DECHARGE, soc_f, p_batt_max_f)
+                        soc_f -= dech_f
+                        dech_f = dech_f * RENDEMENT_DECHARGE
+                    ch_plot.append(charge_f)
+                    de_plot.append(dech_f)
+
         df_total = pd.DataFrame({
             "Temps": dates,
-            "Production PV (kW)": prod_horaire_cumulee,
+            "Production PV (kW)": p_plot,
             "Consommation (kW)": courbe_conso,
-            "Charge Batterie (kW)": liste_charge,
-            "Décharge Batterie (kW)": liste_decharge,
-            "État de Charge (kWh)": liste_soc
+            "Charge Batterie (kW)": ch_plot,
+            "Décharge Batterie (kW)": de_plot
         })
         
         # Sélection du mois avec navigation fléchée DISCRÈTE ET À GAUCHE
@@ -1201,7 +1302,7 @@ if adresse:
         fig_superp.add_trace(go.Scatter(
             x=df_filtre["Temps"],
             y=df_filtre["Autoconsommation (kW)"],
-            name="Énergie autoconsommée",
+            name="Énergie autoconsommée (PV direct)",
             fill='tozeroy',
             mode='none',
             fillpattern=dict(shape="/", fgcolor="#F7DC6F", bgcolor="rgba(0,0,0,0)", fillmode="overlay"),
@@ -1217,21 +1318,21 @@ if adresse:
             fill='none'
         ))
 
-        # Tracés Batterie (si activée)
-        if activer_batterie:
-            # Charge Batterie (Violet)
+        # AJOUT DES FLUX BATTERIE
+        if best_capa_batt > 0:
+            # Charge Batterie (VIOLET)
             fig_superp.add_trace(go.Scatter(
                 x=df_filtre["Temps"],
                 y=df_filtre["Charge Batterie (kW)"],
-                name="Charge Batterie (Stockage)",
+                name="Charge Batterie",
                 line=dict(color='#A569BD', width=1.5, dash='dot'),
                 fill='none'
             ))
-            # Décharge Batterie (Vert)
+            # Décharge Batterie (VERT)
             fig_superp.add_trace(go.Scatter(
                 x=df_filtre["Temps"],
                 y=df_filtre["Décharge Batterie (kW)"],
-                name="Décharge Batterie (Restitution)",
+                name="Décharge Batterie",
                 line=dict(color='#2ECC71', width=1.5, dash='dot'),
                 fill='none'
             ))
