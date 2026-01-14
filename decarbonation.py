@@ -467,7 +467,7 @@ elif mode_conso == "Saisie manuelle (kWh)":
         """.replace(",", " "), unsafe_allow_html=True)
 
 # --- ÉTAPE 5 : PARAMÈTRES FINANCIERS ---
-st.sidebar.write("💰 **Paramètres financiers**")
+st.sidebar.write("💰 **Étape 5 : Paramètres financiers**")
 col_achat, col_vente = st.sidebar.columns(2)
 with col_achat:
     prix_achat = st.number_input("Prix Achat (€/kWh)", min_value=0.0, value=0.25, step=0.01)
@@ -844,7 +844,7 @@ if adresse:
         with c_mode1:
             mode_ideal = st.radio(
                 "Objectif du système",
-                ["Favoriser le meilleur compromis financier (VAN)", "Favoriser l'autonomie du site"],
+                ["Favoriser le retour sur investissement (ROI < 10 ans)", "Favoriser l'autonomie du site"],
                 horizontal=True
             )
         with c_mode2:
@@ -907,7 +907,7 @@ if adresse:
             best_taux_auto_config = 0
             best_taux_prod_config = 0
             best_surplus_config = 0
-            best_van = 0
+            best_economies = 0
             
             # On définit des paliers de test pour la puissance PV
             p_totale_max_toit = sum(p['p_max'] for p in profils_unitaires_par_pan)
@@ -966,17 +966,23 @@ if adresse:
                         gain_annuel_net = gain_annuel_brut - opex_annuel
                         capex_test = (p_test * capex_pv_unit) + (cap_b * capex_batt_unit)
                         
-                        # Calcul financier : Valeur Actuelle Nette (VAN)
+                        # Calcul financier : Économies cumulées (Économies)
                         gain_cumule = gain_annuel_net * duree_projet
                         van_test = gain_cumule - capex_test
                         
-                        # Score : on privilégie la VAN ou l'Autonomie selon le mode
+                        # Score : on privilégie le ROI ou l'Autonomie selon le mode
                         if mode_ideal == "Favoriser l'autonomie du site":
                             # Bonus massif à l'autoproduction
                             score = (t_prod * 1000) + van_test
                         else:
-                            # Priorité à la VAN avec un léger bonus pour l'autonomie pour les égalités
-                            score = van_test + (t_prod * 50) 
+                            # Mode : Favoriser le retour sur investissement (ROI <= 10 ans)
+                            roi_test = capex_test / gain_annuel_net if gain_annuel_net > 0 else 99
+                            if roi_test <= 10:
+                                # Si le ROI est bon, on maximise les économies totales
+                                score = 1000000 + van_test
+                            else:
+                                # Sinon on cherche le meilleur ROI (donc le plus petit chiffre)
+                                score = -roi_test 
                         
                         # Arrêt si gain marginal batterie < 0.2% (plus fin)
                         if cap_b > 0 and (t_prod - last_t_prod) < 0.2:
@@ -992,7 +998,7 @@ if adresse:
                             best_taux_auto_config = t_auto
                             best_taux_prod_config = t_prod
                             best_surplus_config = surplus_test
-                            best_van = van_test
+                            best_economies = van_test
                         
                         # Si on atteint 100% d'autoproduction, on continue de tester pour voir si une plus grosse batterie améliore encore la VAN (peu probable mais possible)
                         # On ne break plus systématiquement à 99% car on veut l'optimum financier
@@ -1047,13 +1053,13 @@ if adresse:
                 opex_annuel_m = (best_pv_total * opex_pv_unit) + (best_capa_batt * opex_batt_unit)
                 best_gain_annuel = gain_annuel_brut_m - opex_annuel_m
                 best_capex = (best_pv_total * capex_pv_unit) + (best_capa_batt * capex_batt_unit)
-                best_van = (best_gain_annuel * duree_projet) - best_capex
+                best_economies = (best_gain_annuel * duree_projet) - best_capex
 
             aug_intro_ideale = max(0.0, best_pv_total - puissance_intro_kw)
             
             # --- AFFICHAGE MÉTRIQUES IDÉALES ---
             c_id1, c_id2, c_id3 = st.columns(3)
-            c_id1.metric("Puissance PV Idéale", f"{best_pv_total:,.1f} kWc".replace(",", " "), help="Puissance PV optimisant l'indépendance énergétique et la rentabilité.")
+            c_id1.metric("Puissance PV Idéale", f"{best_pv_total:,.1f} kWc".replace(",", " "), help="Puissance PV optimisant l'indépendance énergétique et les économies.")
             c_id2.metric("Stockage Idéal", f"{int(best_capa_batt):,} kWh".replace(",", " "), help="Capacité de batterie limitée à un ratio 2:1 avec la puissance PV (Système 0.5C).")
             
             if aug_intro_ideale > 0:
@@ -1095,13 +1101,13 @@ if adresse:
             # --- RENTABILITÉ FINANCIÈRE ---
             st.write("#### 💰 Rentabilité du système idéal")
             roi = best_capex / best_gain_annuel if best_gain_annuel > 0 else 0
-            van_finale = (best_gain_annuel * duree_projet) - best_capex
+            economies_totale = best_economies
             
             cr1, cr2, cr3, cr4 = st.columns(4)
             cr1.metric("Investissement (CAPEX)", f"{int(best_capex):,} €".replace(",", " "))
             cr2.metric("Gain annuel net", f"{int(best_gain_annuel):,} €/an".replace(",", " "), help="Calculé après déduction des OPEX annuels.")
             cr3.metric("Temps de retour (ROI)", f"{roi:,.1f} ans".replace(",", " "))
-            cr4.metric(f"VAN (sur {duree_projet} ans)", f"{int(best_van):,} €".replace(",", " "), help="Valeur Actuelle Nette : Gain total cumulé moins l'investissement initial.")
+            cr4.metric(f"Économies (sur {duree_projet} ans)", f"{int(economies_totale):,} €".replace(",", " "), help="Gain financier net total cumulé sur la durée de vie du projet, moins l'investissement initial.")
 
             # --- ANALYSE DE LA SOLLICITATION DE LA BATTERIE IDÉALE ---
             if best_capa_batt > 0:
