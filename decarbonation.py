@@ -409,6 +409,12 @@ profil_conso = st.sidebar.selectbox(
     ["Résidentiel", "Tertiaire / Bureaux", "Industriel"]
 )
 
+scénario_investissement = st.sidebar.radio(
+    "Scénario d'investissement",
+    ["Je suis propriétaire et consommateur sur site", "Je suis propriétaire mais mon bâtiment est en location"],
+    help="1. Propriétaire-consommateur : Vous investissez et réduisez votre propre facture. \n2. Propriétaire-bailleur : Vous investissez et revendez l'électricité à vos locataires."
+)
+
 # Modes disponibles : on enlève l'estimation pour l'industriel
 modes_disponibles = ["Saisie manuelle (kWh)", "Télécharger une courbe de charge"]
 if profil_conso != "Industriel":
@@ -489,7 +495,12 @@ elif mode_conso == "Saisie manuelle (kWh)":
 st.sidebar.write("💰 **Étape 5 : Paramètres financiers**")
 col_achat, col_vente = st.sidebar.columns(2)
 with col_achat:
-    prix_achat = st.number_input("Prix Achat électricité (€/kWh)", min_value=0.0, value=0.25, step=0.01)
+    if "location" in scénario_investissement:
+        prix_achat = 0.0 # On ne paye pas le réseau dans ce cas
+        prix_revente_locataire = st.number_input("Tarif vente au locataire (€/kWh)", min_value=0.0, value=0.20, step=0.01)
+    else:
+        prix_achat = st.number_input("Prix Achat électricité (€/kWh)", min_value=0.0, value=0.25, step=0.01)
+        prix_revente_locataire = 0.0
 with col_vente:
     prix_vente = st.number_input("Prix vente surplus électricité (€/kWh)", min_value=0.0, value=0.05, step=0.01)
 
@@ -741,10 +752,11 @@ if adresse:
                 st.write(f"**Introduction :** {int(intro_val):,} Ampères (env. {equiv_kva:,.1f} kVA)".replace(",", " "))
 
             # Affichage Consommation
+            label_conso = "Consommation locataires :" if "location" in scénario_investissement else "Consommation :"
             if conso_annuelle_kwh > 100000:
-                st.write(f"**Consommation :** {int(round(conso_annuelle_kwh/1000)):,} MWh/an".replace(",", " "))
+                st.write(f"**{label_conso}** {int(round(conso_annuelle_kwh/1000)):,} MWh/an".replace(",", " "))
             else:
-                st.write(f"**Consommation :** {conso_annuelle_kwh:,.0f} kWh/an".replace(",", " "))
+                st.write(f"**{label_conso}** {conso_annuelle_kwh:,.0f} kWh/an".replace(",", " "))
 
             st.write(f"**Toiture :** {type_toit} ({materiau})")
             st.write(f"**Potentiel toiture :** {puissance_pv_installable:,.1f} kWc".replace(",", " "))
@@ -792,7 +804,8 @@ if adresse:
         
         with col_g1:
             # Graphique Conso Mensuelle
-            st.markdown("<h4 style='font-size: 1.1rem; margin-bottom: 0px;'>📊 Consommation mensuelle</h4>", unsafe_allow_html=True)
+            label_graph_conso = "Consommation mensuelle locataires" if "location" in scénario_investissement else "Consommation mensuelle"
+            st.markdown(f"<h4 style='font-size: 1.1rem; margin-bottom: 0px;'>📊 {label_graph_conso}</h4>", unsafe_allow_html=True)
             mois_noms_loc = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"]
             
             df_conso_m = pd.DataFrame({
@@ -1001,7 +1014,8 @@ if adresse:
                         surplus_test = max(0, prod_annuelle_test - auto_temp_kwh)
                         
                         # Calcul financier avec OPEX
-                        gain_annuel_brut = (auto_temp_kwh * prix_achat) + (surplus_test * prix_vente)
+                        tarif_valorisation_auto = prix_revente_locataire if "location" in scénario_investissement else prix_achat
+                        gain_annuel_brut = (auto_temp_kwh * tarif_valorisation_auto) + (surplus_test * prix_vente)
                         opex_annuel = (p_test * opex_pv_unit) + (cap_b * opex_batt_unit)
                         gain_annuel_net = gain_annuel_brut - opex_annuel
                         capex_test = (p_test * capex_pv_unit) + (cap_b * capex_batt_unit)
@@ -1101,7 +1115,8 @@ if adresse:
                 best_surplus_config = max(0, prod_an_m - auto_m_kwh)
                 
                 # Financier manuel
-                gain_annuel_brut_m = (auto_m_kwh * prix_achat) + (best_surplus_config * prix_vente)
+                tarif_valorisation_auto_m = prix_revente_locataire if "location" in scénario_investissement else prix_achat
+                gain_annuel_brut_m = (auto_m_kwh * tarif_valorisation_auto_m) + (best_surplus_config * prix_vente)
                 opex_annuel_m = (best_pv_total * opex_pv_unit) + (best_capa_batt * opex_batt_unit)
                 best_gain_annuel = gain_annuel_brut_m - opex_annuel_m
                 best_capex = (best_pv_total * capex_pv_unit) + (best_capa_batt * capex_batt_unit)
