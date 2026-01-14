@@ -226,7 +226,7 @@ st.sidebar.header("🏢 Informations du Bâtiment")
 
 # 1. Adresse avec Auto-complétion et état
 if "adresse_validee" not in st.session_state:
-    st.session_state.adresse_validee = None
+    st.session_state.adresse_validee = "1 rue du cimetiere 68730 blotzheim"
 
 # CSS pour enlever le liseré rouge de Streamlit sur la searchbox
 st.markdown("""
@@ -291,7 +291,7 @@ if type_toit == "Plat":
         selection_orientations = ["Est", "Ouest"]
     
     # Pour toit plat, pas de méthode de mesure (toujours surface réelle projetée)
-    surface_dispo = st.sidebar.number_input("Surface totale (m²)", min_value=1, value=200, step=1)
+    surface_dispo = st.sidebar.number_input("Surface totale (m²)", min_value=1, value=300, step=1)
     st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {surface_dispo:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
     mode_mesure = "Surface réelle"
     
@@ -319,7 +319,7 @@ else:
         with col1:
             orient = st.selectbox("Orientation", orientations_possibles, index=4)
         with col2:
-            incli = st.number_input("Inclinaison (°)", min_value=0, max_value=90, value=30)
+            incli = st.number_input("Inclinaison (°)", min_value=0, max_value=90, value=10)
         
         # Méthode de mesure juste avant surface disponible
         mode_mesure = st.sidebar.radio(
@@ -328,7 +328,7 @@ else:
             horizontal=True,
             help="**Vue aérienne** : La surface est calculée comme une projection horizontale. L'outil appliquera un correctif trigonométrique selon l'inclinaison pour obtenir la surface réelle du toit."
         )
-        surf = st.sidebar.number_input("Surface disponible (m²)", min_value=1, value=200)
+        surf = st.sidebar.number_input("Surface totale (m²)", min_value=1, value=300)
         st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {surf:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
         donnees_pans.append({"orientation": orient, "inclinaison": incli, "surface": surf})
     else:
@@ -340,8 +340,19 @@ else:
             help="**Vue aérienne** : La surface est calculée comme une projection horizontale. L'outil appliquera un correctif trigonométrique selon l'inclinaison pour obtenir la surface réelle du toit."
         )
         
-        selection_multi = st.sidebar.multiselect("Sélectionnez les orientations", orientations_possibles, default=["Sud-Est", "Sud-Ouest"])
+        couples_possibles = {
+            "Nord / Sud": ["Nord", "Sud"],
+            "Est / Ouest": ["Est", "Ouest"],
+            "Nord-Est / Sud-Ouest": ["Nord-Est", "Sud-Ouest"],
+            "Nord-Ouest / Sud-Est": ["Nord-Ouest", "Sud-Est"]
+        }
+        choix_couple = st.sidebar.selectbox("Choisissez le couple d'orientations (2 pans)", list(couples_possibles.keys()))
+        selection_multi = couples_possibles[choix_couple]
         
+        # Saisie de la surface totale juste après le choix du couple
+        surf_totale_multi = st.sidebar.number_input("Surface totale des 2 pans (m²)", min_value=1, value=300, key="surf_totale_multi")
+        st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {surf_totale_multi:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
+
         # Tableau compact pour Multi-orientations avec titres
         if selection_multi:
             # On utilise des colonnes un peu plus larges pour les titres complets
@@ -350,17 +361,23 @@ else:
             h2.caption("**Inclinaison (°)**")
             h3.caption("**Surface (m²)**")
             
+            # On divise la surface par 2 par défaut pour chaque pan
+            surf_par_pan_defaut = surf_totale_multi / 2
+            
             for o in selection_multi:
-                # Utilisation de colonnes alignées sans espacement vertical excessif
+                # Utilisation de colonnes alignées
                 c1, c2, c3 = st.sidebar.columns([1.5, 1.8, 1.7])
                 with c1:
                     st.write(f"{o}")
                 with c2:
-                    incli = st.number_input(f"Incl. {o}", min_value=0, max_value=90, value=30, key=f"incli_{o}", label_visibility="collapsed")
+                    incli = st.number_input(f"Incl. {o}", min_value=0, max_value=90, value=10, key=f"incli_{o}", label_visibility="collapsed")
                 with c3:
-                    surf = st.number_input(f"Surf. {o}", min_value=1, value=25, key=f"surf_{o}", label_visibility="collapsed")
-                    st.markdown(f'<div style="font-size: 0.7rem; color: #666; margin-top: -10px;">👉 {surf:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
-                donnees_pans.append({"orientation": o, "inclinaison": incli, "surface": surf})
+                    # On permet la modification individuelle de la surface par pan
+                    # Ajout d'un petit rappel visuel avec séparateur de milliers
+                    surf_pan_individuelle = st.number_input(f"Surf. {o}", min_value=0.0, value=float(surf_par_pan_defaut), key=f"surf_{o}", label_visibility="collapsed", format="%.1f")
+                    st.markdown(f'<div style="font-size: 0.7rem; color: #888; margin-top: -10px;">{surf_pan_individuelle:,.1f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
+                
+                donnees_pans.append({"orientation": o, "inclinaison": incli, "surface": surf_pan_individuelle})
 
 # --- ÉTAPE 4 : INTRODUCTION ÉLECTRIQUE ---
 st.sidebar.write("🔌 **Introduction électrique**")
@@ -368,7 +385,8 @@ col_unit, col_val = st.sidebar.columns([1, 1])
 with col_unit:
     unite_intro = st.selectbox(
         "Unité", 
-        ["kVA", "Ampères"], 
+        ["Ampères", "kVA"], 
+        index=0,
         label_visibility="collapsed",
         help="L'unité de puissance d'introduction de votre bâtiment."
     )
@@ -376,8 +394,9 @@ with col_val:
     intro_val = st.number_input(
         f"Valeur Intro", 
         min_value=0.1, 
-        value=9.9, 
-        step=0.1, 
+        value=250.0, 
+        step=0.1 if unite_intro == "kVA" else 1.0, 
+        format="%.1f" if unite_intro == "kVA" else "%.0f",
         label_visibility="collapsed",
         help="La valeur des kVA est normalement notée dans votre contrat d'abonnement ou sur vos factures d'électricité."
     )
@@ -410,7 +429,7 @@ if mode_conso == "Estimation automatique":
         with col_nb:
             nb_logements = st.number_input("Nb logements", min_value=1, value=1, step=1)
         with col_surf:
-            surf_hab = st.number_input("Surface ($m^2$)", min_value=1, value=100, step=10)
+            surf_hab = st.number_input("Surface totale (m²)", min_value=1, value=100, step=10)
             st.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {surf_hab:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
         
         col_dpe, col_heat = st.sidebar.columns(2)
@@ -430,7 +449,7 @@ if mode_conso == "Estimation automatique":
             conso_annuelle_kwh = conso_base + (1000 * nb_logements if ecs_elec else 0)
 
     elif profil_conso == "Tertiaire / Bureaux":
-        surf_tert = st.sidebar.number_input("Surface totale ($m^2$)", min_value=1, value=500, step=100)
+        surf_tert = st.sidebar.number_input("Surface totale (m²)", min_value=1, value=500, step=50)
         st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {surf_tert:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
         activite = st.sidebar.selectbox("Activité", ["Bureaux", "Commerce", "Restauration"])
         clim = st.sidebar.checkbox("Locaux climatisés", value=True)
@@ -470,11 +489,11 @@ elif mode_conso == "Saisie manuelle (kWh)":
 st.sidebar.write("💰 **Étape 5 : Paramètres financiers**")
 col_achat, col_vente = st.sidebar.columns(2)
 with col_achat:
-    prix_achat = st.number_input("Prix Achat (€/kWh)", min_value=0.0, value=0.25, step=0.01)
+    prix_achat = st.number_input("Prix Achat électricité (€/kWh)", min_value=0.0, value=0.25, step=0.01)
 with col_vente:
-    prix_vente = st.number_input("Prix Vente (€/kWh)", min_value=0.0, value=0.05, step=0.01)
+    prix_vente = st.number_input("Prix vente surplus électricité (€/kWh)", min_value=0.0, value=0.05, step=0.01)
 
-duree_projet = st.sidebar.number_input("Durée de vie du projet (ans)", min_value=1, max_value=50, value=20)
+duree_projet = st.sidebar.number_input("Durée de vie du projet (ans)", min_value=1, max_value=50, value=25)
 
 with st.sidebar.expander("💸 Coûts d'installation (CAPEX & OPEX)"):
     # CAPEX
@@ -719,7 +738,7 @@ if adresse:
                 st.write(f"**Introduction :** {intro_val:,.1f} kVA".replace(",", " "))
             else:
                 equiv_kva = (400 * intro_val * 1.732) / 1000
-                st.write(f"**Introduction :** {intro_val:,.1f} Ampères (env. {equiv_kva:,.1f} kVA)".replace(",", " "))
+                st.write(f"**Introduction :** {int(intro_val):,} Ampères (env. {equiv_kva:,.1f} kVA)".replace(",", " "))
 
             # Affichage Consommation
             if conso_annuelle_kwh > 100000:
@@ -840,15 +859,18 @@ if adresse:
         st.header("🏆 Votre système photovoltaïque et stockage idéal")
         
         # --- NOUVEAU : CHOIX DU MODE ET SAISIE MANUELLE ---
-        c_mode1, c_mode2 = st.columns(2)
-        with c_mode1:
-            mode_ideal = st.radio(
-                "Objectif du système",
-                ["Favoriser le retour sur investissement (ROI < 10 ans)", "Favoriser l'autonomie du site"],
-                horizontal=True
-            )
-        with c_mode2:
-            override_ideal = st.checkbox("Tester manuellement une configuration", value=False)
+        st.markdown("<h3 style='font-size: 1.2rem; font-weight: bold;'>Objectif du système</h3>", unsafe_allow_html=True)
+        mode_ideal = st.radio(
+            "Objectif du système",
+            [
+                "Favoriser le retour sur investissement", 
+                "Favoriser l'autonomie du site",
+                "Tester manuellement une configuration"
+            ],
+            label_visibility="collapsed"
+        )
+        
+        override_ideal = (mode_ideal == "Tester manuellement une configuration")
         
         # Paramètres batteries par défaut
         DOD = 0.90  # Profondeur de décharge (90%)
@@ -912,15 +934,33 @@ if adresse:
             # On définit des paliers de test pour la puissance PV
             p_totale_max_toit = sum(p['p_max'] for p in profils_unitaires_par_pan)
             p_couverture_conso = conso_annuelle_kwh / productible_moyen if productible_moyen > 0 else 20.0
-            # Recherche d'un compromis : on teste une plage large autour des besoins
-            # On ne dépasse pas 15x la couverture de conso ou la surface max
-            p_recherche_max = min(p_totale_max_toit, max(p_couverture_conso * 2.5, 100.0))
             
-            pas_pv = max(0.5, p_recherche_max / 30)
-            paliers_pv = [i * pas_pv for i in range(1, 31)]
-            paliers_pv.append(p_recherche_max)
-            paliers_pv = sorted(list(set([p for p in paliers_pv if p <= p_totale_max_toit])))
+            # Nouvelle Logique PV (Paliers de 10%)
+            if mode_ideal == "Favoriser l'autonomie du site":
+                # Première itération : production annuelle >= consommation annuelle
+                # p_start = p_couverture_conso
+                p_start = p_couverture_conso
+                p_max_test = p_couverture_conso * 2.0
+            else: # Favoriser le ROI
+                # Première itération : 50% de la consommation annuelle
+                p_start = p_couverture_conso * 0.5
+                p_max_test = p_couverture_conso * 2.0
             
+            paliers_pv = []
+            curr_p = p_start
+            while curr_p <= p_max_test + 0.01: # Marge pour flottants
+                if curr_p <= p_totale_max_toit:
+                    paliers_pv.append(curr_p)
+                curr_p += p_couverture_conso * 0.1 # Augmentation de +10% de la conso
+            
+            # Si le toit est plus petit que le minimum demandé, on ajoute quand même le max du toit
+            if not paliers_pv:
+                paliers_pv = [p_totale_max_toit]
+            
+            paliers_pv = sorted(list(set(paliers_pv)))
+            
+            scenarios_comparaison = [] # Pour le graphique de synthèse
+
             with st.spinner("Calcul du dimensionnement idéal..."):
                 for p_test in paliers_pv:
                     ratio_pv = p_test / p_totale_max_toit if p_totale_max_toit > 0 else 0
@@ -930,17 +970,17 @@ if adresse:
                         for i in range(8760):
                             prod_h_test[i] += item['profil'][i] * p_pan_test
                     
-                    # Test de batteries : max ratio 2:1 entre Stockage et PV (kWh = 2 * kWc)
-                    cap_max_batt = p_test * 2.0 # Brider à 2h (Système 0.5C)
-                    pas_b = max(1.0, cap_max_batt / 15)
-                    paliers_batt = [i * pas_b for i in range(16)]
+                    # Logique stockage : 3 tailles (100%, 75%, 50%) de la batterie max
+                    # Batterie max : Puissance = PV, Capacité = 2 * PV
+                    cap_max_batt = p_test * 2.0
+                    paliers_batt = [cap_max_batt, cap_max_batt * 0.75, cap_max_batt * 0.50]
+                    paliers_batt = sorted(list(set(paliers_batt)), reverse=True)
                     
-                    last_t_prod = 0
                     for cap_b in paliers_batt:
                         cap_utile_b = cap_b * DOD
                         s_temp = 0.0
                         auto_temp_kwh = 0
-                        p_batt_max_test = cap_b * C_RATE
+                        p_batt_max_test = cap_b * C_RATE # Toujours 0.5C donc puissance = 0.5 * cap
                         
                         for ph, ch in zip(prod_h_test, courbe_conso):
                             if ph >= ch:
@@ -966,28 +1006,40 @@ if adresse:
                         gain_annuel_net = gain_annuel_brut - opex_annuel
                         capex_test = (p_test * capex_pv_unit) + (cap_b * capex_batt_unit)
                         
-                        # Calcul financier : Économies cumulées (Économies)
                         gain_cumule = gain_annuel_net * duree_projet
                         van_test = gain_cumule - capex_test
+                        roi_test = capex_test / gain_annuel_net if gain_annuel_net > 0 else 99
                         
-                        # Score : on privilégie le ROI ou l'Autonomie selon le mode
+                        # Enregistrement pour le graphique de synthèse
+                        scenarios_comparaison.append({
+                            "Label": f"{p_test:,.1f} kWc / {int(cap_b)} kWh".replace(",", " "),
+                            "Autoproduction": t_prod,
+                            "Autoconsommation": t_auto,
+                            "ROI": round(roi_test, 1),
+                            "Economies": round(van_test)
+                        })
+
+                        # Sélection de l'optimum
                         if mode_ideal == "Favoriser l'autonomie du site":
-                            # Bonus massif à l'autoproduction
-                            score = (t_prod * 1000) + van_test
+                            # Priorité : meilleure autoproduction
+                            score = (t_prod * 10000) - capex_test / 1000  # On privilégie la prod, puis le capex le plus bas si égalité
                         else:
-                            # Mode : Favoriser le retour sur investissement (ROI <= 10 ans)
-                            roi_test = capex_test / gain_annuel_net if gain_annuel_net > 0 else 99
-                            if roi_test <= 10:
-                                # Si le ROI est bon, on maximise les économies totales
-                                score = 1000000 + van_test
+                            # Priorité : ROI le plus bas
+                            if roi_test > 0:
+                                score = 1000 - roi_test  # Un ROI plus bas donne un score plus haut
                             else:
-                                # Sinon on cherche le meilleur ROI (donc le plus petit chiffre)
-                                score = -roi_test 
-                        
-                        # Arrêt si gain marginal batterie < 0.2% (plus fin)
-                        if cap_b > 0 and (t_prod - last_t_prod) < 0.2:
-                            break
-                        last_t_prod = t_prod
+                                score = -9999
+
+                        if score > best_autoprod_score:
+                            best_autoprod_score = score
+                            best_pv_total = p_test
+                            best_capa_batt = cap_b
+                            best_gain_annuel = gain_annuel_net
+                            best_capex = capex_test
+                            best_taux_auto_config = t_auto
+                            best_taux_prod_config = t_prod
+                            best_surplus_config = surplus_test
+                            best_economies = van_test
 
                         if score > best_autoprod_score:
                             best_autoprod_score = score
@@ -1067,7 +1119,7 @@ if adresse:
                     label_aug = f"+{aug_intro_ideale:,.1f} kVA".replace(",", " ")
                 else:
                     amp_aug = (aug_intro_ideale * 1000) / (400 * 1.732)
-                    label_aug = f"+{amp_aug:,.1f} A".replace(",", " ")
+                    label_aug = f"+{int(amp_aug):,} A".replace(",", " ")
                 c_id3.metric("Augmentation d'intro", label_aug, delta=f"Besoin de {best_pv_total:,.1f} kW au total".replace(",", " "), delta_color="inverse")
             else:
                 c_id3.metric("Augmentation d'intro", "Aucune")
@@ -1108,6 +1160,69 @@ if adresse:
             cr2.metric("Gain annuel net", f"{int(best_gain_annuel):,} €/an".replace(",", " "), help="Calculé après déduction des OPEX annuels.")
             cr3.metric("Temps de retour (ROI)", f"{roi:,.1f} ans".replace(",", " "))
             cr4.metric(f"Économies (sur {duree_projet} ans)", f"{int(economies_totale):,} €".replace(",", " "), help="Gain financier net total cumulé sur la durée de vie du projet, moins l'investissement initial.")
+
+            # --- NOUVEAU : GRAPHIQUE DE SYNTHÈSE DES SIMULATIONS ---
+            st.write("---")
+            if mode_ideal == "Favoriser l'autonomie du site":
+                st.write("#### 📊 Analyse comparative : Autoproduction et Autoconsommation")
+            else:
+                st.write(f"#### 📊 Analyse comparative : ROI et Économies sur {duree_projet} ans")
+            
+            if scenarios_comparaison:
+                df_comp = pd.DataFrame(scenarios_comparaison)
+                fig_comp = go.Figure()
+                
+                if mode_ideal == "Favoriser l'autonomie du site":
+                    # Double ordonnée : Autoconsommation (Barres) / Autoproduction (Ligne)
+                    fig_comp.add_trace(go.Bar(
+                        x=df_comp["Label"],
+                        y=df_comp["Autoconsommation"],
+                        name="Autoconsommation (%)",
+                        marker_color="#AED6F1",
+                        yaxis="y1"
+                    ))
+                    fig_comp.add_trace(go.Scatter(
+                        x=df_comp["Label"],
+                        y=df_comp["Autoproduction"],
+                        name="Autoproduction (%)",
+                        mode="lines+markers",
+                        line=dict(color="#F7DC6F", width=3),
+                        marker=dict(size=8),
+                        yaxis="y2"
+                    ))
+                    fig_comp.update_layout(
+                        yaxis=dict(title="Autoconsommation (%)", range=[0, 105]),
+                        yaxis2=dict(title="Autoproduction (%)", range=[0, 105], overlaying="y", side="right")
+                    )
+                else:
+                    # Double ordonnée : Économies (Barres) / ROI (Ligne)
+                    fig_comp.add_trace(go.Bar(
+                        x=df_comp["Label"],
+                        y=df_comp["Economies"],
+                        name=f"Économies sur {duree_projet} ans (€)",
+                        marker_color="#AED6F1",
+                        yaxis="y1"
+                    ))
+                    fig_comp.add_trace(go.Scatter(
+                        x=df_comp["Label"],
+                        y=df_comp["ROI"],
+                        name="ROI (ans)",
+                        mode="lines+markers",
+                        line=dict(color="#E74C3C", width=3),
+                        yaxis="y2"
+                    ))
+                    fig_comp.update_layout(
+                        yaxis=dict(title=f"Économies sur {duree_projet} ans (€)"),
+                        yaxis2=dict(title="ROI (ans)", overlaying="y", side="right", range=[0, max(df_comp["ROI"]) * 1.2 if not df_comp["ROI"].empty else 20])
+                    )
+                
+                fig_comp.update_layout(
+                    height=500,
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    hovermode="x unified"
+                )
+                st.plotly_chart(fig_comp, use_container_width=True)
 
             # --- ANALYSE DE LA SOLLICITATION DE LA BATTERIE IDÉALE ---
             if best_capa_batt > 0:
