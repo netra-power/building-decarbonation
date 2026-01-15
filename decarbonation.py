@@ -240,10 +240,18 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# On récupère le pays sélectionné même si l'adresse est validée pour la devise
+if "pays_selectionne" not in st.session_state:
+    st.session_state.pays_selectionne = "France"
+
 if not st.session_state.adresse_validee:
     st.sidebar.info("👋 Bienvenue ! Veuillez sélectionner votre pays puis saisir votre adresse pour lancer l'étude.")
     st.sidebar.write("🌍 **Étape 1 : Choisir le pays**")
     pays_selectionne = st.sidebar.selectbox("Sélectionnez votre pays", ["France", "Suisse"], label_visibility="collapsed")
+    st.session_state.pays_selectionne = pays_selectionne
+    
+    # Définition de la devise selon le pays
+    devise = "€" if pays_selectionne == "France" else "CHF"
     
     st.sidebar.write("📍 **Étape 2 : Saisir l'adresse**")
     search_key = f"search_adresse_{st.session_state.get('search_version', 0)}"
@@ -266,6 +274,9 @@ else:
         # On incrémente une version pour forcer Streamlit à recréer le widget searchbox
         st.session_state.search_version = st.session_state.get('search_version', 0) + 1
         st.rerun()
+
+# Récupération de la devise même si l'adresse est validée
+devise = "€" if st.session_state.pays_selectionne == "France" else "CHF"
 
 adresse = st.session_state.adresse_validee
 
@@ -353,23 +364,23 @@ else:
         if "last_selection_multi" not in st.session_state or st.session_state.last_selection_multi != selection_multi:
             st.session_state.last_selection_multi = selection_multi
             # Reset des surfaces lors du changement de couple
-            st.session_state.surf_totale_multi = 300.0
+            st.session_state.surf_totale_multi = 300
             for o in selection_multi:
-                st.session_state[f"surf_{o}"] = 150.0
+                st.session_state[f"surf_{o}"] = 150
 
         def update_from_total():
             val_total = st.session_state.surf_totale_multi
             for o in selection_multi:
-                st.session_state[f"surf_{o}"] = val_total / len(selection_multi)
+                st.session_state[f"surf_{o}"] = int(val_total / len(selection_multi))
 
         def update_from_individual():
             val_sum = sum(st.session_state[f"surf_{o}"] for o in selection_multi)
-            st.session_state.surf_totale_multi = val_sum
+            st.session_state.surf_totale_multi = int(val_sum)
 
         # Saisie de la surface totale juste après le choix du couple
         surf_totale_multi = st.sidebar.number_input(
             "Surface totale des 2 pans (m²)", 
-            min_value=1.0, 
+            min_value=1, 
             key="surf_totale_multi",
             on_change=update_from_total
         )
@@ -394,13 +405,13 @@ else:
                     # On permet la modification individuelle de la surface par pan
                     surf_pan_individuelle = st.number_input(
                         f"Surf. {o}", 
-                        min_value=0.0, 
+                        min_value=0, 
                         key=f"surf_{o}", 
                         label_visibility="collapsed", 
-                        format="%.1f",
+                        format="%d",
                         on_change=update_from_individual
                     )
-                    st.markdown(f'<div style="font-size: 0.7rem; color: #888; margin-top: -10px;">{surf_pan_individuelle:,.1f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
+                    st.markdown(f'<div style="font-size: 0.7rem; color: #888; margin-top: -10px;">{surf_pan_individuelle:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
                 
                 donnees_pans.append({"orientation": o, "inclinaison": incli, "surface": surf_pan_individuelle})
 
@@ -436,7 +447,7 @@ profil_conso = st.sidebar.selectbox(
 
 scénario_investissement = st.sidebar.radio(
     "Scénario d'investissement",
-    ["Je suis propriétaire et consommateur sur site", "Je suis propriétaire mais mon bâtiment est en location"],
+    ["Je suis propriétaire et consommateur sur site", "Je suis propriétaire et mon bâtiment est en location"],
     help="1. Propriétaire-consommateur : Vous investissez et réduisez votre propre facture. \n2. Propriétaire-bailleur : Vous investissez et revendez l'électricité à vos locataires."
 )
 
@@ -518,32 +529,47 @@ elif mode_conso == "Saisie manuelle (kWh)":
 
 # --- ÉTAPE 5 : PARAMÈTRES FINANCIERS ---
 st.sidebar.write("💰 **Étape 5 : Paramètres financiers**")
+
+# Calcul du CAPEX PV estimé selon le type de toiture
+coef_suisse = 1.1 if st.session_state.pays_selectionne == "Suisse" else 1.0
+
+capex_pv_estime = 850 * coef_suisse # Base par défaut (Plat simple)
+if type_toit == "Plat":
+    if materiau == "Gravier":
+        capex_pv_estime = 893 * coef_suisse
+    elif materiau == "Bitumineux":
+        capex_pv_estime = 935 * coef_suisse
+else:  # Incliné
+    if materiau == "Tôle":
+        capex_pv_estime = 978 * coef_suisse
+    elif materiau == "Tuile":
+        capex_pv_estime = 1020 * coef_suisse
+    elif materiau == "Eternit":
+        capex_pv_estime = 1063 * coef_suisse
+
 col_achat, col_vente = st.sidebar.columns(2)
 with col_achat:
     if "location" in scénario_investissement:
         prix_achat = 0.0 # On ne paye pas le réseau dans ce cas
-        prix_revente_locataire = st.number_input("Tarif vente au locataire (€/kWh)", min_value=0.0, value=0.20, step=0.01)
+        prix_revente_locataire = st.number_input(f"Tarif vente au locataire ({devise}/kWh)", min_value=0.0, value=0.20, step=0.01)
     else:
-        prix_achat = st.number_input("Prix Achat électricité (€/kWh)", min_value=0.0, value=0.25, step=0.01)
+        prix_achat = st.number_input(f"Prix Achat électricité ({devise}/kWh)", min_value=0.0, value=0.25, step=0.01)
         prix_revente_locataire = 0.0
 with col_vente:
-    prix_vente = st.number_input("Prix vente surplus électricité (€/kWh)", min_value=0.0, value=0.05, step=0.01)
+    prix_vente = st.number_input(f"Prix vente surplus électricité ({devise}/kWh)", min_value=0.0, value=0.05, step=0.01)
 
 duree_projet = st.sidebar.number_input("Durée de vie du projet (ans)", min_value=1, max_value=50, value=25)
 
-with st.sidebar.expander("💸 Coûts d'installation (CAPEX & OPEX)"):
-    # CAPEX
-    capex_pv_unit = st.number_input("CAPEX PV (€/kWc)", min_value=0, value=800, step=100)
-    capex_batt_unit = st.number_input("CAPEX Batterie (€/kWh)", min_value=0, value=350, step=50)
+with st.sidebar.expander("💸 Coûts d'installation"):
+    # Investissement initial
+    capex_pv_unit = st.number_input(f"Investissement PV ({devise}/kWc)", min_value=0, value=int(capex_pv_estime), step=50, help=f"Valeur estimée pour une toiture {type_toit.lower()} {materiau.lower()}.")
+    capex_batt_unit = st.number_input(f"Investissement Batterie ({devise}/kWh)", min_value=0, value=int(350 * coef_suisse), step=50)
     
     st.markdown("---")
-    # OPEX basés sur % du CAPEX par défaut
-    st.write("**Maintenance annuelle (OPEX)**")
-    pct_opex_pv = st.slider("Maintenance PV (% du CAPEX/an)", 0.0, 5.0, 1.0, 0.1) / 100
-    opex_pv_unit = st.number_input("OPEX PV (€/kWc/an)", min_value=0.0, value=float(capex_pv_unit * pct_opex_pv), step=1.0)
-    
-    pct_opex_batt = st.slider("Maintenance Batterie (% du CAPEX/an)", 0.0, 5.0, 1.0, 0.1) / 100
-    opex_batt_unit = st.number_input("OPEX Batterie (€/kWh/an)", min_value=0.0, value=float(capex_batt_unit * pct_opex_batt), step=1.0)
+    # Maintenance annuelle
+    st.write("**Maintenance annuelle**")
+    opex_pv_unit = st.number_input(f"Maintenance PV ({devise}/kWc/an)", min_value=0.0, value=6.0 * coef_suisse, step=1.0)
+    opex_batt_unit = st.number_input(f"Maintenance Batterie ({devise}/kWh/an)", min_value=0.0, value=3.0 * coef_suisse, step=1.0)
 
 # --- OBJECTIF DU SYSTÈME ---
 st.sidebar.markdown("<h3 style='font-size: 1.2rem; font-weight: bold;'>Objectif du système</h3>", unsafe_allow_html=True)
@@ -708,6 +734,8 @@ if adresse:
 
                 details_pans_calcul.append({
                     "orientation": orient_pan,
+                    "inclinaison": incli_pan,
+                    "surface": surf_pan,
                     "puissance": puissance_pan,
                     "prod_unit": prod_unit,
                     "nb_mods": nb_mods
@@ -777,15 +805,16 @@ if adresse:
         col1, col2 = st.columns(2)
 
         with col1:
-            st.subheader("📍 Bâtiment")
+            st.markdown("#### **📍 Bâtiment**")
             st.write(f"**Adresse :** {adresse}")
             
             # Affichage Introduction
             if unite_intro == "kVA":
-                st.write(f"**Introduction :** {intro_val:,.1f} kVA".replace(",", " "))
+                equiv_amp = (intro_val * 1000) / (400 * 1.732)
+                st.write(f"**Introduction :** {intro_val:,.1f} kVA - {int(equiv_amp):,} A".replace(",", " "))
             else:
                 equiv_kva = (400 * intro_val * 1.732) / 1000
-                st.write(f"**Introduction :** {int(intro_val):,} Ampères (env. {equiv_kva:,.1f} kVA)".replace(",", " "))
+                st.write(f"**Introduction :** {equiv_kva:,.1f} kVA - {int(intro_val):,} A".replace(",", " "))
 
             # Affichage Consommation
             label_conso = "Consommation locataires :" if "location" in scénario_investissement else "Consommation :"
@@ -795,30 +824,44 @@ if adresse:
                 st.write(f"**{label_conso}** {conso_annuelle_kwh:,.0f} kWh/an".replace(",", " "))
 
             st.write(f"**Toiture :** {type_toit} ({materiau})")
-            st.write(f"**Potentiel toiture :** {puissance_pv_installable:,.1f} kWc".replace(",", " "))
-            st.write("**Détail par orientation :**")
+            st.write("**Potentiel par orientation :**")
+            
+            # Création d'un petit tableau HTML pour les orientations
+            html_table = """<style>
+.small-table { width: 100%; font-size: 0.8rem; border-collapse: collapse; margin-top: 5px; table-layout: fixed; }
+.small-table td, .small-table th { border-bottom: 1px solid #eee; padding: 4px 0; text-align: left; width: 20%; overflow: hidden; }
+.small-table th { color: #666; font-weight: normal; }
+</style>
+<table class="small-table">
+<thead>
+<tr><th>Orientation</th><th>Inclinaison</th><th>Surface</th><th>Modules</th><th>Puissance</th></tr>
+</thead>
+<tbody>"""
             for d in details_pans_calcul:
-                st.write(f"- {d['orientation']} : {d['puissance']:,.1f} kWc ({d['nb_mods']:,} modules)".replace(",", " "))
+                html_table += f"<tr><td>{d['orientation']}</td><td>{d['inclinaison']}°</td><td>{d['surface']:,.0f} m²</td><td>{d['nb_mods']:,}</td><td>{d['puissance']:,.1f} kWc</td></tr>"
+            
+            html_table += "</tbody></table>"
+            st.markdown(html_table.replace(",", " "), unsafe_allow_html=True)
+            st.write(f"**Potentiel total de la toiture :** {puissance_pv_installable:,.1f} kWc".replace(",", " "))
         
         with col2:
-            st.subheader("☀️ Potentiel Solaire")
-            st.metric("Productible (PVGIS)", f"{productible_moyen:,.0f} kWh/kWc/an".replace(",", " "))
+            st.markdown("#### **☀️ Potentiel Solaire**")
             
-            # Affichage de la puissance et du nombre de modules sur la même ligne via Markdown
-            st.write("**Puissance installable**")
-            st.markdown(f"""
-                <div style="display: flex; align-items: baseline; gap: 10px;">
-                    <span style="font-size: 1.8rem; font-weight: 600;">{puissance_retenue:,.1f} kWc</span>
-                    <span style="font-size: 0.9rem; color: #666;">(soit {int(nb_modules_final):,} modules de 500 Wc)</span>
-                </div>
-                """.replace(",", " "), unsafe_allow_html=True)
+            # 1 & 3. Puissance installable et modules sur la même ligne
+            st.markdown(f'**Puissance installable :** {puissance_retenue:,.1f} kWc <span style="font-size: 0.9rem; color: #666; margin-left: 10px;">(soit {int(nb_modules_final):,} modules de 500 Wc)</span>'.replace(",", " "), unsafe_allow_html=True)
             
+            # 2. La remarque en bleue
             st.markdown(f"""
-                <div style="font-size: 0.75rem; color: #555; background-color: #e7f3fe; padding: 8px; border-radius: 5px; border-left: 5px solid #2196F3; margin-top: 5px; margin-bottom: 10px;">
+                <div style="font-size: 0.75rem; color: #555; background-color: #e7f3fe; padding: 8px; border-radius: 5px; border-left: 5px solid #2196F3; margin-top: 5px; margin-bottom: 20px;">
                     💡 La puissance installable est le minimum entre la capacité de votre toit et la puissance de votre raccordement électrique.
                 </div>
                 """, unsafe_allow_html=True)
-            st.metric("Production annuelle totale", f"{production_totale_an:,.0f} kWh/an".replace(",", " "))
+
+            # 4. Productible PVGIS
+            st.write(f"**Productible (PVGIS) :** {productible_moyen:,.0f} kWh/kWc/an".replace(",", " "))
+            
+            # 5. Production annuelle
+            st.write(f"**Production annuelle totale :** {production_totale_an:,.0f} kWh/an".replace(",", " "))
 
         # Une seule ligne continue séparatrice après les deux paragraphes
         st.write("---")
@@ -896,7 +939,7 @@ if adresse:
         # --- SECTION AUTOCONSOMMATION ---
         st.write("---")
         st.header("Analyse de l'autoconsommation en exploitant la totalité de votre toiture")
-        st.write("##### pour une installation photovoltaique seule conditionnée par la puissance de votre raccordement éléctrique actuel")
+        st.write("Pour une installation photovoltaique seule conditionnée par la puissance de votre raccordement éléctrique actuel")
         
         # Calcul des KPI financiers pour la section 2
         capex_pv_s2 = puissance_retenue * capex_pv_unit
@@ -921,10 +964,10 @@ if adresse:
         
         # KPI Financiers sur une ligne
         f_col1, f_col2, f_col3, f_col4 = st.columns(4)
-        f_col1.metric("Investissement", f"{capex_pv_s2:,.0f} €".replace(",", " "))
-        f_col2.metric("Gain annuel", f"{gain_annuel_s2:,.0f} €/an".replace(",", " "))
+        f_col1.metric("Investissement", f"{capex_pv_s2:,.0f} {devise}".replace(",", " "))
+        f_col2.metric("Gain annuel", f"{gain_annuel_s2:,.0f} {devise}/an".replace(",", " "))
         f_col3.metric("ROI", f"{roi_s2:.1f} ans")
-        f_col4.metric(f"Économies ({duree_projet} ans)", f"{economies_totales_s2:,.0f} €".replace(",", " "))
+        f_col4.metric(f"Économies ({duree_projet} ans)", f"{economies_totales_s2:,.0f} {devise}".replace(",", " "))
         
         # --- SECTION SYSTÈME IDÉAL ---
         st.write("---")
@@ -1240,10 +1283,10 @@ if adresse:
             economies_totale = best_economies
             
             cr1, cr2, cr3, cr4 = st.columns(4)
-            cr1.metric("Investissement (CAPEX)", f"{int(best_capex):,} €".replace(",", " "))
-            cr2.metric("Gain annuel net", f"{int(best_gain_annuel):,} €/an".replace(",", " "), help="Calculé après déduction des OPEX annuels.")
+            cr1.metric("Investissement", f"{int(best_capex):,} {devise}".replace(",", " "))
+            cr2.metric("Gain annuel net", f"{int(best_gain_annuel):,} {devise}/an".replace(",", " "), help="Calculé après déduction de la maintenance annuelle.")
             cr3.metric("Temps de retour (ROI)", f"{roi:,.1f} ans".replace(",", " "))
-            cr4.metric(f"Économies (sur {duree_projet} ans)", f"{int(economies_totale):,} €".replace(",", " "), help="Gain financier net total cumulé sur la durée de vie du projet, moins l'investissement initial.")
+            cr4.metric(f"Économies (sur {duree_projet} ans)", f"{int(economies_totale):,} {devise}".replace(",", " "), help="Gain financier net total cumulé sur la durée de vie du projet, moins l'investissement initial.")
 
             # --- NOUVEAU : GRAPHIQUE DE SYNTHÈSE DES SIMULATIONS ---
             st.write("---")
@@ -1261,7 +1304,7 @@ if adresse:
                     fig_comp.add_trace(go.Bar(
                         x=df_comp["Label"],
                         y=df_comp["Economies"],
-                        name=f"Économies sur {duree_projet} ans (€)",
+                        name=f"Économies sur {duree_projet} ans ({devise})",
                         marker_color="#AED6F1",
                         yaxis="y1"
                     ))
@@ -1275,7 +1318,7 @@ if adresse:
                         yaxis="y2"
                     ))
                     fig_comp.update_layout(
-                        yaxis=dict(title=f"Économies sur {duree_projet} ans (€)"),
+                        yaxis=dict(title=f"Économies sur {duree_projet} ans ({devise})"),
                         yaxis2=dict(title="Autoproduction (%)", range=[0, 105], overlaying="y", side="right")
                     )
                 else:
@@ -1283,7 +1326,7 @@ if adresse:
                     fig_comp.add_trace(go.Bar(
                         x=df_comp["Label"],
                         y=df_comp["Economies"],
-                        name=f"Économies sur {duree_projet} ans (€)",
+                        name=f"Économies sur {duree_projet} ans ({devise})",
                         marker_color="#AED6F1",
                         yaxis="y1"
                     ))
@@ -1296,7 +1339,7 @@ if adresse:
                         yaxis="y2"
                     ))
                     fig_comp.update_layout(
-                        yaxis=dict(title=f"Économies sur {duree_projet} ans (€)"),
+                        yaxis=dict(title=f"Économies sur {duree_projet} ans ({devise})"),
                         yaxis2=dict(title="ROI (ans)", overlaying="y", side="right", range=[0, max(df_comp["ROI"]) * 1.2 if not df_comp["ROI"].empty else 20])
                     )
                 
