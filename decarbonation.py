@@ -605,6 +605,13 @@ if st.session_state.get("simuler_batterie", True):
 else:
     opex_batt_unit = 0.0
 
+# Conversion kVA ou Amp en kW
+# En résidentiel/tertiaire, 1 kVA ≈ 1 kW.
+if unite_intro == "Ampères":
+    puissance_intro_kw = (400 * intro_val * 1.732) / 1000
+else:
+    puissance_intro_kw = intro_val
+
 # --- OBJECTIF DU SYSTÈME ---
 st.sidebar.markdown("<h3 style='font-size: 1.2rem; font-weight: bold;'>Objectif du système</h3>", unsafe_allow_html=True)
 mode_ideal = st.sidebar.radio(
@@ -629,8 +636,17 @@ if simuler_batterie:
     st.sidebar.markdown("<div style='margin-left: 20px;'>", unsafe_allow_html=True)
     autoriser_ecretage = st.sidebar.checkbox("Autoriser l'écrêtement de pointe", value=False, on_change=reset_simulation)
     if autoriser_ecretage:
-        taxe_puissance_annuelle = st.sidebar.number_input(f"Taxe puissance ({devise}/kW/an)", min_value=0.0, value=7.0 if st.session_state.pays_selectionne == "Suisse" else 6.0, step=0.5, format="%.1f", on_change=reset_simulation)
-        st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {taxe_puissance_annuelle:,.1f} {devise}/kW/an</div>'.replace(",", " "), unsafe_allow_html=True)
+        if st.session_state.pays_selectionne == "France":
+            if puissance_intro_kw < 36:
+                st.sidebar.info("💡 Pour les abonnements < 36 kVA, le peak shaving permet principalement d'éviter les disjonctions intempestives.")
+                taxe_puissance_annuelle = 0.0
+            else:
+                taxe_puissance_annuelle = st.sidebar.number_input(f"Tarif dépassement ({devise}/heure)", min_value=0.0, value=12.65, step=0.1, format="%.2f", on_change=reset_simulation, help="Frais par heure de dépassement de la puissance souscrite.")
+                st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {taxe_puissance_annuelle:,.2f} {devise}/heure</div>'.replace(",", " "), unsafe_allow_html=True)
+                st.sidebar.caption("Note: Tarif par défaut de 12.65 €/h pour les clients BT > 36 kVA.")
+        else: # Suisse
+            taxe_puissance_annuelle = st.sidebar.number_input(f"Taxe puissance ({devise}/kW/mois)", min_value=0.0, value=7.0, step=0.5, format="%.1f", on_change=reset_simulation, help="Chaque mois est facturé un montant basé sur la puissance maximale atteinte chaque mois.")
+            st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {taxe_puissance_annuelle:,.1f} {devise}/kW/mois</div>'.replace(",", " "), unsafe_allow_html=True)
     
     autoriser_services = st.sidebar.checkbox("Autoriser la participation aux services systèmes", value=False, on_change=reset_simulation)
     if autoriser_services:
@@ -760,14 +776,6 @@ if mode_conso == "Télécharger une courbe de charge":
         except Exception as e:
             st.sidebar.error(f"Erreur lors de la lecture du fichier : {e}")
 
-# Conversion kVA ou Amp en kW
-# En résidentiel/tertiaire, 1 kVA ≈ 1 kW.
-if unite_intro == "Ampères":
-    puissance_intro_kw = (400 * intro_val * 1.732) / 1000
-else:
-    puissance_intro_kw = intro_val
-
-# --- LOGIQUE DE CALCUL (PVGIS) ---
 if st.session_state.get("simulation_lancee", False) and "params_valides" in st.session_state:
     # Récupération des paramètres figés
     pv = st.session_state.params_valides
@@ -1219,8 +1227,6 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                     # Revenus additionnels batterie (Peak Shaving et Services Systèmes)
                     revenu_ecretage = 0
                     if autoriser_ecretage_val and cap_b > 0:
-                        jours_par_mois_calc = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                        
                         # Approche simplifiée mais efficace : 
                         # On simule le profil net heure par heure pour toute l'année d'abord
                         profil_net = []
@@ -1240,19 +1246,34 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                 net = besoin - decharge * RENDEMENT_DECHARGE
                                 profil_net.append(net)
                         
-                        gain_ecretage_total = 0
-                        idx_h = 0
-                        for m in range(12):
-                            heures_mois = jours_par_mois_calc[m] * 24
-                            # Max mensuel net atteint avec le système
-                            p_max_mensuel_net = max(profil_net[idx_h : idx_h + heures_mois]) if profil_net[idx_h : idx_h + heures_mois] else 0
-                            
-                            # Réduction par rapport à la puissance d'abonnement (ou max conso sans système)
-                            # Ici on utilise puissance_intro_kw_val comme référence de base
-                            reduction = max(0, puissance_intro_kw_val - p_max_mensuel_net)
-                            gain_ecretage_total += reduction * (taxe_puissance_annuelle_val / 12)
-                            idx_h += heures_mois
-                        revenu_ecretage = gain_ecretage_total
+                        if st.session_state.pays_selectionne == "France":
+                            if puissance_intro_kw_val >= 36:
+                                # Coût par heure de dépassement (France > 36 kVA)
+                                # On compte les heures où le profil initial dépassait et le profil net ne dépasse plus
+                                nb_heures_depassement_initial = sum(1 for c_initial in courbe_conso_val_calc if c_initial > puissance_intro_kw_val + 0.001)
+                                nb_heures_depassement_final = sum(1 for p_net in profil_net if p_net > puissance_intro_kw_val + 0.001)
+                                # L'économie est le nombre d'heures de dépassement évitées
+                                revenu_ecretage = max(0, nb_heures_depassement_initial - nb_heures_depassement_final) * taxe_puissance_annuelle_val
+                            else:
+                                # France < 36 kVA : pas d'économie financière directe
+                                revenu_ecretage = 0
+                        else:
+                            # Suisse : Économie sur la taxe de puissance mensuelle
+                            gain_ecretage_total = 0
+                            jours_par_mois_calc = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                            idx_h = 0
+                            for m in range(12):
+                                heures_mois = jours_par_mois_calc[m] * 24
+                                # Max mensuel initial (sans système)
+                                p_max_mensuel_initial = max(courbe_conso_val_calc[idx_h : idx_h + heures_mois]) if courbe_conso_val_calc[idx_h : idx_h + heures_mois] else 0
+                                # Max mensuel net atteint avec le système
+                                p_max_mensuel_net = max(profil_net[idx_h : idx_h + heures_mois]) if profil_net[idx_h : idx_h + heures_mois] else 0
+                                
+                                # L'économie se fait sur la réduction du pic effectif du bâtiment par rapport à son pic initial
+                                reduction = max(0, p_max_mensuel_initial - p_max_mensuel_net)
+                                gain_ecretage_total += reduction * taxe_puissance_annuelle_val
+                                idx_h += heures_mois
+                            revenu_ecretage = gain_ecretage_total
 
                     revenu_services = (cap_b / 1000) * revenu_services_unit_val if autoriser_services_val and cap_b > 0 else 0
                     gain_annuel_brut += revenu_ecretage + revenu_services
@@ -1389,9 +1410,22 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                     idx_h = 0
                                     for m in range(12):
                                         heures_mois = jours_par_mois_calc[m] * 24
+                                        # Max mensuel initial
+                                        p_max_mensuel_initial = max(courbe_conso_val_calc[idx_h : idx_h + heures_mois]) if courbe_conso_val_calc[idx_h : idx_h + heures_mois] else 0
+                                        # Max mensuel net
                                         p_max_mensuel_net = max(profil_net[idx_h : idx_h + heures_mois]) if profil_net[idx_h : idx_h + heures_mois] else 0
-                                        reduction = max(0, puissance_intro_kw_val - p_max_mensuel_net)
-                                        gain_ecretage_total += reduction * (taxe_puissance_annuelle_val / 12)
+                                        
+                                        if st.session_state.pays_selectionne == "France":
+                                            if puissance_intro_kw_val >= 36:
+                                                # En France, on compte les heures de dépassement évitées sur le mois
+                                                # (Version simplifiée dans la boucle d'optimisation pour la performance)
+                                                nb_h_dep_init = sum(1 for c_i in courbe_conso_val_calc[idx_h : idx_h + heures_mois] if c_i > puissance_intro_kw_val + 0.001)
+                                                nb_h_dep_final = sum(1 for p_n in profil_net[idx_h : idx_h + heures_mois] if p_n > puissance_intro_kw_val + 0.001)
+                                                gain_ecretage_total += max(0, nb_h_dep_init - nb_h_dep_final) * taxe_puissance_annuelle_val
+                                        else:
+                                            # Suisse : réduction du pic mensuel réel
+                                            reduction = max(0, p_max_mensuel_initial - p_max_mensuel_net)
+                                            gain_ecretage_total += reduction * taxe_puissance_annuelle_val
                                         idx_h += heures_mois
                                     revenu_ecretage = gain_ecretage_total
 
@@ -1733,6 +1767,28 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
             line=dict(color='#AED6F1', width=2, shape='spline'),
             fill='none'
         ))
+
+        # Ajout de la ligne de puissance souscrite (La Pointe)
+        fig_superp.add_hline(
+            y=puissance_intro_kw_val,
+            line_dash="dash",
+            line_color="red",
+            annotation_text="Limite de raccordement",
+            annotation_position="bottom right"
+        )
+
+        # Mise en évidence des dépassements de pointe
+        df_depassement = df_filtre[df_filtre["Consommation (kW)"] > puissance_intro_kw_val].copy()
+        if not df_depassement.empty:
+            fig_superp.add_trace(go.Scatter(
+                x=df_depassement["Temps"],
+                y=df_depassement["Consommation (kW)"],
+                mode='markers',
+                name="Dépassement de pointe",
+                marker=dict(color='red', size=6),
+                hoverinfo='text',
+                text=[f"Dépassement: {v:.1f} kW" for v in df_depassement["Consommation (kW)"]]
+            ))
 
         # Zone d'Autoconsommation (Hachurée)
         fig_superp.add_trace(go.Scatter(
