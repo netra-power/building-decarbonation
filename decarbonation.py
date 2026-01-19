@@ -1202,6 +1202,9 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                     s_temp = 0.0
                     auto_temp_kwh = 0
                     p_batt_max_test = cap_b * C_RATE
+                    soc_points = []
+                    p_max_net = 0
+                    total_decharge_sim = 0
                     
                     for ph, ch in zip(prod_h_test, courbe_conso_val_calc):
                         if ph >= ch:
@@ -1209,12 +1212,21 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                             dispo = ph - ch
                             charge = min(dispo, (cap_utile_b - s_temp) / RENDEMENT_CHARGE, p_batt_max_test)
                             s_temp += charge * RENDEMENT_CHARGE
+                            soc_points.append(s_temp)
+                            p_max_net = max(p_max_net, 0)
                         else:
                             auto_temp_kwh += ph
                             besoin = ch - ph
                             decharge = min(besoin / RENDEMENT_DECHARGE, s_temp, p_batt_max_test)
                             s_temp -= decharge
                             auto_temp_kwh += decharge * RENDEMENT_DECHARGE
+                            total_decharge_sim += decharge * RENDEMENT_DECHARGE
+                            soc_points.append(s_temp)
+                            p_max_net = max(p_max_net, besoin - decharge * RENDEMENT_DECHARGE)
+                    
+                    cyclage_annuel = total_decharge_sim / cap_b if cap_b > 0 else 0
+                    remplissage_moyen = (sum(soc_points) / len(soc_points)) / cap_b * 100 if cap_b > 0 else 0
+                    ratio_puissance = (p_max_net / p_test * 100) if p_test > 0 else 0
                     
                     prod_annuelle_test = sum(prod_h_test)
                     t_prod = (auto_temp_kwh / conso_annuelle_kwh_val * 100) if conso_annuelle_kwh_val > 0 else 0
@@ -1227,8 +1239,7 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                     # Revenus additionnels batterie (Peak Shaving et Services Systèmes)
                     revenu_ecretage = 0
                     if autoriser_ecretage_val and cap_b > 0:
-                        # Approche simplifiée mais efficace : 
-                        # On simule le profil net heure par heure pour toute l'année d'abord
+                        # On a déjà les infos pour calculer profil_net si besoin, mais on le refait par sécurité ou on optimise
                         profil_net = []
                         s_temp_sim = 0.0
                         cap_utile_sim = cap_b * DOD
@@ -1297,7 +1308,10 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                         "Autoproduction": t_prod,
                         "Autoconsommation": t_auto,
                         "ROI": round(capex_test / gain_annuel_net, 1) if gain_annuel_net > 0 else 99,
-                        "Economies": round(van_test)
+                        "Economies": round(van_test),
+                        "Cyclage": round(cyclage_annuel),
+                        "Remplissage": round(remplissage_moyen),
+                        "RatioPuissance": round(ratio_puissance)
                     })
                 else:
                     # MODE AUTO : Recherche de l'optimum
@@ -1360,6 +1374,9 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                 s_temp = 0.0
                                 auto_temp_kwh = 0
                                 p_batt_max_test = cap_b * C_RATE
+                                soc_points = []
+                                p_max_net = 0
+                                total_decharge_sim = 0
                                 
                                 for ph, ch in zip(prod_h_test, courbe_conso_val_calc):
                                     if ph >= ch:
@@ -1367,13 +1384,22 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                         dispo = ph - ch
                                         charge = min(dispo, (cap_utile_b - s_temp) / RENDEMENT_CHARGE, p_batt_max_test)
                                         s_temp += charge * RENDEMENT_CHARGE
+                                        soc_points.append(s_temp)
+                                        p_max_net = max(p_max_net, 0)
                                     else:
                                         auto_temp_kwh += ph
                                         besoin = ch - ph
                                         decharge = min(besoin / RENDEMENT_DECHARGE, s_temp, p_batt_max_test)
                                         s_temp -= decharge
                                         auto_temp_kwh += decharge * RENDEMENT_DECHARGE
+                                        total_decharge_sim += decharge * RENDEMENT_DECHARGE
+                                        soc_points.append(s_temp)
+                                        p_max_net = max(p_max_net, besoin - decharge * RENDEMENT_DECHARGE)
                                 
+                                cyclage_annuel = total_decharge_sim / cap_b if cap_b > 0 else 0
+                                remplissage_moyen = (sum(soc_points) / len(soc_points)) / cap_b * 100 if cap_b > 0 else 0
+                                ratio_puissance = (p_max_net / p_test * 100) if p_test > 0 else 0
+
                                 prod_annuelle_test = sum(prod_h_test)
                                 t_prod = (auto_temp_kwh / conso_annuelle_kwh_val * 100) if conso_annuelle_kwh_val > 0 else 0
                                 t_auto = (auto_temp_kwh / prod_annuelle_test * 100) if prod_annuelle_test > 0 else 0
@@ -1445,7 +1471,10 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                     "Autoproduction": t_prod,
                                     "Autoconsommation": t_auto,
                                     "ROI": round(roi_test, 1),
-                                    "Economies": round(van_test)
+                                    "Economies": round(van_test),
+                                    "Cyclage": round(cyclage_annuel),
+                                    "Remplissage": round(remplissage_moyen),
+                                    "RatioPuissance": round(ratio_puissance)
                                 })
 
                                 if "autonomie" in mode_ideal_val.lower():
@@ -1534,56 +1563,125 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                 df_comp = pd.DataFrame(scenarios_comparaison)
                 fig_comp = go.Figure()
                 
-                if mode_ideal_val == "Favoriser l'autonomie du site":
-                    # Double ordonnée : Économies (Barres) / Autoproduction (Ligne)
-                    fig_comp.add_trace(go.Bar(
-                        x=df_comp["Label"],
-                        y=df_comp["Economies"],
-                        name=f"Économies sur {duree_projet_val} ans ({devise_val})",
-                        marker_color="#AED6F1",
-                        yaxis="y1"
-                    ))
-                    fig_comp.add_trace(go.Scatter(
-                        x=df_comp["Label"],
-                        y=df_comp["Autoproduction"],
-                        name="Autoproduction (%)",
-                        mode="lines+markers",
-                        line=dict(color="#F7DC6F", width=3),
-                        marker=dict(size=8),
-                        yaxis="y2"
-                    ))
-                    fig_comp.update_layout(
-                        yaxis=dict(title=f"Économies sur {duree_projet_val} ans ({devise_val})"),
-                        yaxis2=dict(title="Autoproduction (%)", range=[0, 105], overlaying="y", side="right")
-                    )
-                else:
-                    # Double ordonnée : Économies (Barres) / ROI (Ligne)
-                    fig_comp.add_trace(go.Bar(
-                        x=df_comp["Label"],
-                        y=df_comp["Economies"],
-                        name=f"Économies sur {duree_projet_val} ans ({devise_val})",
-                        marker_color="#AED6F1",
-                        yaxis="y1"
-                    ))
-                    fig_comp.add_trace(go.Scatter(
-                        x=df_comp["Label"],
-                        y=df_comp["ROI"],
-                        name="ROI (ans)",
-                        mode="lines+markers",
-                        line=dict(color="#E74C3C", width=3),
-                        yaxis="y2"
-                    ))
-                    fig_comp.update_layout(
-                        yaxis=dict(title=f"Économies sur {duree_projet_val} ans ({devise_val})"),
-                        yaxis2=dict(title="ROI (ans)", overlaying="y", side="right", range=[0, max(df_comp["ROI"]) * 1.2 if not df_comp["ROI"].empty else 20])
-                    )
+                # Économies (Barres bleues) - Axe Y1
+                fig_comp.add_trace(go.Bar(
+                    x=df_comp["Label"],
+                    y=df_comp["Economies"],
+                    name=f"Économies sur {duree_projet_val} ans ({devise_val})",
+                    marker_color="#AED6F1",
+                    yaxis="y1",
+                    hovertemplate="%{y:,.0f} " + devise_val
+                ))
                 
+                # ROI (Courbe rouge) - Axe Y2 (%)
+                fig_comp.add_trace(go.Scatter(
+                    x=df_comp["Label"],
+                    y=df_comp["ROI"],
+                    name="ROI (ans)",
+                    mode="lines+markers",
+                    line=dict(color="#E74C3C", width=3),
+                    marker=dict(size=8),
+                    yaxis="y2",
+                    hovertemplate="%{y:.1f} ans"
+                ))
+                
+                # Autoproduction (Courbe jaune) - Axe Y2 (%)
+                fig_comp.add_trace(go.Scatter(
+                    x=df_comp["Label"],
+                    y=df_comp["Autoproduction"],
+                    name="Autoproduction (%)",
+                    mode="lines+markers",
+                    line=dict(color="#F7DC6F", width=3),
+                    marker=dict(size=8),
+                    yaxis="y2",
+                    hovertemplate="%{y:.1f} %"
+                ))
+
+                # Cyclage annuel (Courbe violette) - Axe Y3
+                fig_comp.add_trace(go.Scatter(
+                    x=df_comp["Label"],
+                    y=df_comp["Cyclage"],
+                    name="Cyclage annuel",
+                    mode="lines+markers",
+                    line=dict(color="#A569BD", width=2, dash='dot'),
+                    yaxis="y3",
+                    hovertemplate="%{y} cycles"
+                ))
+
+                # Taux de remplissage moyen (Courbe verte) - Axe Y2 (%)
+                fig_comp.add_trace(go.Scatter(
+                    x=df_comp["Label"],
+                    y=df_comp["Remplissage"],
+                    name="Remplissage moyen (%)",
+                    mode="lines+markers",
+                    line=dict(color="#2ECC71", width=2, dash='dash'),
+                    yaxis="y2",
+                    hovertemplate="%{y:.1f} %"
+                ))
+
+                # Ratio Puissance appelée/installée (Courbe orange) - Axe Y2 (%)
+                fig_comp.add_trace(go.Scatter(
+                    x=df_comp["Label"],
+                    y=df_comp["RatioPuissance"],
+                    name="Ratio P. appelée/installée (%)",
+                    mode="lines+markers",
+                    line=dict(color="#E67E22", width=2, dash='longdash'),
+                    yaxis="y2",
+                    hovertemplate="%{y:.1f} %"
+                ))
+
+                # ZONES IDÉALES (Lignes horizontales et annotations)
+                # ROI < 8 ans
+                fig_comp.add_hline(y=8, line_dash="solid", line_color="#E74C3C", line_width=1, yref="y2")
+                
+                # Cyclage > 150
+                fig_comp.add_hline(y=150, line_dash="solid", line_color="#A569BD", line_width=1, yref="y3")
+                
+                # Remplissage 40-60%
+                fig_comp.add_hrect(y0=40, y1=60, fillcolor="#2ECC71", opacity=0.1, line_width=0, yref="y2")
+                
+                # Ratio Puissance 60-80%
+                fig_comp.add_hrect(y0=60, y1=80, fillcolor="#E67E22", opacity=0.1, line_width=0, yref="y2")
+
                 fig_comp.update_layout(
-                    height=500,
-                    margin=dict(l=0, r=0, t=30, b=0),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    hovermode="x unified"
+                    height=600,
+                    margin=dict(l=100, r=80, t=50, b=50),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                    hovermode="x unified",
+                    xaxis=dict(domain=[0.15, 0.9]),
+                    yaxis=dict(
+                        title=f"Économies ({devise_val})",
+                        title_font=dict(color="#AED6F1"),
+                        tickfont=dict(color="#AED6F1"),
+                        side="left",
+                        position=0.15
+                    ),
+                    yaxis3=dict(
+                        title="Cyclage annuel",
+                        title_font=dict(color="#A569BD"),
+                        tickfont=dict(color="#A569BD"),
+                        side="left",
+                        overlaying="y",
+                        anchor="free",
+                        position=0,
+                        range=[0, max(df_comp["Cyclage"].max() * 1.2, 700) if not df_comp["Cyclage"].empty else 700],
+                        showgrid=False
+                    ),
+                    yaxis2=dict(
+                        title="Pourcentage (%) / ROI (ans)",
+                        side="right",
+                        overlaying="y",
+                        range=[0, 105],
+                        showgrid=True,
+                        gridcolor="rgba(0,0,0,0.1)",
+                        position=0.9
+                    )
                 )
+                
+                # Ajout d'annotations pour les zones idéales
+                fig_comp.add_annotation(x=0.01, y=8, yref="y2", xref="paper", text="ROI idéal < 8 ans", showarrow=False, font=dict(color="#E74C3C", size=10), bgcolor="white", opacity=0.8)
+                fig_comp.add_annotation(x=0.01, y=150, yref="y3", xref="paper", text="Cyclage idéal > 150", showarrow=False, font=dict(color="#A569BD", size=10), bgcolor="white", opacity=0.8)
+
                 st.plotly_chart(fig_comp, use_container_width=True)
 
             # --- ANALYSE DE LA SOLLICITATION DE LA BATTERIE IDÉALE ---
