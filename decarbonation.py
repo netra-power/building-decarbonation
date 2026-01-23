@@ -6,8 +6,31 @@ import math
 import plotly.express as px
 import plotly.graph_objects as go
 import datetime
+import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from geopy.geocoders import Nominatim
 from streamlit_searchbox import st_searchbox
+
+# --- CONFIGURATION REQUÊTES AVEC RETRY ---
+def requests_retry_session(
+    retries=3,
+    backoff_factor=0.3,
+    status_forcelist=(500, 502, 504),
+    session=None,
+):
+    session = session or requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Décarbonation Bâtiment", layout="wide")
@@ -32,7 +55,7 @@ def rechercher_adresses(searchterm: str, pays: str):
             try:
                 url_fr = "https://api-adresse.data.gouv.fr/search/"
                 params_fr = {"q": searchterm, "limit": 10}
-                res_fr = requests.get(url_fr, params=params_fr, timeout=2)
+                res_fr = requests_retry_session().get(url_fr, params=params_fr, timeout=5)
                 if res_fr.status_code == 200:
                     for f in res_fr.json().get("features", []):
                         adresses.append(f["properties"]["label"])
@@ -48,7 +71,7 @@ def rechercher_adresses(searchterm: str, pays: str):
                     "origins": "address",
                     "limit": 15
                 }
-                res_ch = requests.get(url_ch, params=params_ch, timeout=3)
+                res_ch = requests_retry_session().get(url_ch, params=params_ch, timeout=5)
                 if res_ch.status_code == 200:
                     for f in res_ch.json().get("results", []):
                         adresses.append(f["attrs"]["label"].replace("<b>", "").replace("</b>", ""))
@@ -57,7 +80,7 @@ def rechercher_adresses(searchterm: str, pays: str):
                 try:
                     url_ph = "https://photon.komoot.io/api/"
                     params_ph = {"q": searchterm, "limit": 10, "lang": "fr"}
-                    res_ph = requests.get(url_ph, params=params_ph, timeout=3)
+                    res_ph = requests_retry_session().get(url_ph, params=params_ph, timeout=5)
                     if res_ph.status_code == 200:
                         for f in res_ph.json().get("features", []):
                             p = f.get("properties", {})
@@ -71,7 +94,7 @@ def rechercher_adresses(searchterm: str, pays: str):
             try:
                 url_ph = "https://photon.komoot.io/api/"
                 params_ph = {"q": searchterm, "limit": 10, "lang": "fr"}
-                res_ph = requests.get(url_ph, params=params_ph, timeout=3)
+                res_ph = requests_retry_session().get(url_ph, params=params_ph, timeout=5)
                 if res_ph.status_code == 200:
                     for f in res_ph.json().get("features", []):
                         p = f.get("properties", {})
@@ -99,7 +122,7 @@ def obtenir_lat_lon(adresse):
         try:
             url = "https://photon.komoot.io/api/"
             params = {"q": adresse, "limit": 1}
-            res = requests.get(url, params=params, timeout=5).json()
+            res = requests_retry_session().get(url, params=params, timeout=10).json()
             if res["features"]:
                 lon, lat = res["features"][0]["geometry"]["coordinates"]
                 return lat, lon
@@ -123,7 +146,7 @@ def appeler_pvgis(lat, lon, angle, aspect):
         "outputformat": "json"
     }
     try:
-        response = requests.get(url, params=params)
+        response = requests_retry_session().get(url, params=params, timeout=10)
         if response.status_code == 200:
             data = response.json()
             return data['outputs']['totals']['fixed']['E_y'] # Production annuelle en kWh
@@ -147,7 +170,7 @@ def appeler_pvgis_mensuel(lat, lon, angle, aspect):
         "outputformat": "json"
     }
     try:
-        response = requests.get(url, params=params)
+        response = requests_retry_session().get(url, params=params, timeout=10)
         if response.status_code == 200:
             data = response.json()
             # On récupère la liste des productions mensuelles (E_m)
@@ -176,7 +199,7 @@ def appeler_pvgis_horaire(lat, lon, angle, aspect):
         "endyear": 2020
     }
     try:
-        response = requests.get(url, params=params)
+        response = requests_retry_session().get(url, params=params, timeout=15)
         if response.status_code == 200:
             data = response.json()
             # On extrait la puissance horaire (P) pour chaque heure
@@ -239,10 +262,6 @@ def recuperer_prix_dynamiques(pays, annee=2024):
     # PROFIL TYPE (Fallback) - Moyenne 2024 (France/Suisse)
     # On simule un profil horaire réaliste (bas le matin/nuit, haut pics de 8h et 19h)
     profil_type = []
-    
-    # On utilise une seed pour la reproductibilité
-    np.random.seed(42)
-    
     for h in range(8760):
         heure = h % 24
         # Base de prix entre 0.05 et 0.15 €/kWh
@@ -256,10 +275,7 @@ def recuperer_prix_dynamiques(pays, annee=2024):
         if mois in [11, 0, 1]: base *= 1.3 # Hiver plus cher
         elif mois in [5, 6, 7]: base *= 0.8 # Été moins cher
         
-        # Ajout de volatilité aléatoire
-        base += np.random.normal(0, 0.01)
-        
-        profil_type.append(max(0.01, base))
+        profil_type.append(base)
     
     return profil_type
 
@@ -336,7 +352,7 @@ if type_toit == "Plat":
         materiau = st.selectbox("Matériau", ["Bitumineux", "Gravier"], label_visibility="collapsed", on_change=reset_simulation)
     
     # Choix de la variante pour toit plat
-    variante_plat = st.sidebar.radio("Variante d'installation", ["Sud (Optimisé rendement)", "Est-Ouest (Optimisé surface)"], index=1, horizontal=True, on_change=reset_simulation)
+    variante_plat = st.sidebar.radio("Variante d'installation", ["Sud (Optimisé rendement)", "Est-Ouest (Optimisé surface)"], horizontal=True, on_change=reset_simulation)
     
     inclinaison = 10
     if "Sud" in variante_plat:
@@ -345,7 +361,7 @@ if type_toit == "Plat":
         selection_orientations = ["Est", "Ouest"]
     
     # Pour toit plat, pas de méthode de mesure (toujours surface réelle projetée)
-    surface_dispo = st.sidebar.number_input("Surface totale (m²)", min_value=1, value=2200, step=1, on_change=reset_simulation)
+    surface_dispo = st.sidebar.number_input("Surface totale (m²)", min_value=1, value=300, step=1, on_change=reset_simulation)
     st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {surface_dispo:,.0f} m²</div>'.replace(",", " "), unsafe_allow_html=True)
     mode_mesure = "Surface réelle"
     
@@ -482,7 +498,7 @@ if st.session_state.pays_selectionne == "France":
             intro_val = st.number_input(
                 "Valeur Intro (kVA)", 
                 min_value=1.0, 
-                value=850.0, 
+                value=36.0, 
                 step=1.0, 
                 format="%.0f",
                 label_visibility="collapsed",
@@ -502,146 +518,26 @@ if st.session_state.pays_selectionne == "France":
     # Nouvel input pour l'abonnement en France
     st.sidebar.write("📜 **Abonnement contractuel**")
     
-    # Choix de l'offre en France
-    offres_france = ["Tarif bleu particulier", "Tarif bleu pro", "Tarif jaune", "Tarif vert"]
-    offre_france_selectionnee = st.sidebar.selectbox(
-        "Offre tarifaire",
-        offres_france,
-        index=2,
-        on_change=reset_simulation,
-        help="Sélectionnez votre type de contrat électricité."
+    type_tarif = st.sidebar.selectbox(
+        "Type de tarif",
+        ["Tarif bleu particuliers", "Tarif bleu pro", "Tarif jaune", "Tarif vert"],
+        on_change=reset_simulation
     )
     
-    # Paramètres tarifaires par défaut
-    if offre_france_selectionnee == "Tarif bleu particulier":
-        paliers_particulier = [6, 9, 12, 15, 18, 24, 30, 36]
-        # Recherche du palier le plus proche de la valeur actuelle ou 36 par défaut
-        idx_defaut = 7 # 36 kVA
-        if "abonnement_val_prec" in st.session_state:
-            val_prec = st.session_state.abonnement_val_prec
-            if val_prec in paliers_particulier:
-                idx_defaut = paliers_particulier.index(val_prec)
-        
-        abonnement_val = st.sidebar.selectbox(
-            "Abonnement (kVA)",
-            paliers_particulier,
-            index=idx_defaut,
-            on_change=reset_simulation,
-            help="Puissance souscrite de votre abonnement électrique (Tarif Bleu Particulier)."
-        )
-        st.session_state.abonnement_val_prec = abonnement_val
-        
-        # Données de l'image pour le Tarif Bleu Particulier (HC)
-        tarifs_abo = {
-            6: 141.60,
-            9: 176.16,
-            12: 209.16,
-            15: 239.88,
-            18: 271.80,
-            24: 340.20,
-            30: 402.36,
-            36: 465.00
-        }
-        # Prix HP/HC de l'image (en c€/kWh -> conversion en €/kWh)
-        # HP: 14.12 c€ -> 0.1412 €
-        # HC: 10.07 c€ -> 0.1007 €
-        prix_achat_hp_defaut = 0.1412
-        prix_achat_hc_defaut = 0.1007
-        cout_abonnement_annuel = tarifs_abo.get(abonnement_val, 465.00)
-        # On ajoute la majoration pour autoproducteurs avec injection (9.60 €/an)
-        cout_abonnement_annuel += 9.60
-        
-        # On calcule le coût moyen par kVA pour rester compatible avec la logique actuelle
-        cout_abonnement_kva_defaut = cout_abonnement_annuel / abonnement_val if abonnement_val > 0 else 30.0
-        
-    elif offre_france_selectionnee == "Tarif bleu pro":
-        option_pro = st.sidebar.radio(
-            "Option tarifaire",
-            ["Base", "Heures Creuses"],
-            index=0,
-            horizontal=True,
-            on_change=reset_simulation
-        )
-        
-        paliers_pro = [3, 6, 9, 12, 15, 18, 24, 30, 36] if option_pro == "Base" else [6, 9, 12, 15, 18, 24, 30, 36]
-        
-        idx_defaut = len(paliers_pro) - 1 # 36 kVA par défaut
-        if "abonnement_val_pro_prec" in st.session_state:
-            val_prec = st.session_state.abonnement_val_pro_prec
-            if val_prec in paliers_pro:
-                idx_defaut = paliers_pro.index(val_prec)
-        
-        abonnement_val = st.sidebar.selectbox(
-            "Abonnement (kVA)",
-            paliers_pro,
-            index=idx_defaut,
-            on_change=reset_simulation,
-            help=f"Puissance souscrite de votre abonnement électrique (Tarif Bleu Pro {option_pro})."
-        )
-        st.session_state.abonnement_val_pro_prec = abonnement_val
-        
-        if option_pro == "Base":
-            # Données de l'image : Tarif Bleu Pro Base
-            tarifs_abo = {3: 134.04, 6: 166.92, 9: 198.60, 12: 230.28, 15: 261.48, 18: 291.60, 24: 357.36, 30: 422.52, 36: 487.20}
-            prix_achat_hp_defaut = 0.1274
-            prix_achat_hc_defaut = 0.1274
-        else:
-            # Données de l'image : Tarif Bleu Pro Heures Creuses
-            tarifs_abo = {6: 167.40, 9: 200.16, 12: 233.76, 15: 265.68, 18: 299.04, 24: 371.40, 30: 436.32, 36: 501.84}
-            prix_achat_hp_defaut = 0.1351
-            prix_achat_hc_defaut = 0.0989
-            
-        cout_abonnement_annuel = tarifs_abo.get(abonnement_val, 501.84)
-        cout_abonnement_annuel += 9.60 # Majoration autoproducteur
-        cout_abonnement_kva_defaut = cout_abonnement_annuel / abonnement_val if abonnement_val > 0 else 30.0
-        
-    elif offre_france_selectionnee == "Tarif jaune":
-        version_jaune = st.sidebar.radio(
-            "Version d'utilisation",
-            ["Longue Utilisation (LU)", "Courte Utilisation (CU)"],
-            index=0,
-            horizontal=True,
-            on_change=reset_simulation
-        )
-        
-        abonnement_val = st.sidebar.number_input(
-            "Abonnement (kVA)",
-            min_value=37.0,
-            value=850.0,
-            step=1.0,
-            format="%.0f",
-            on_change=reset_simulation,
-            help="Puissance souscrite de votre abonnement électrique (Tarif Jaune > 36 kVA)."
-        )
-        
-        # Tarification selon l'image
-        if "Longue Utilisation" in version_jaune:
-            prime_fixe = 38.27
-            # Prix moyen approximatif pour l'affichage (le moteur utilisera le vecteur saisonnier)
-            prix_achat_hp_defaut = 0.13155 # Moyenne (17.594 + 8.716)/2 / 100
-            prix_achat_hc_defaut = 0.10015 # Moyenne (12.009 + 8.021)/2 / 100
-        else:
-            prime_fixe = 26.44
-            prix_achat_hp_defaut = 0.13823
-            prix_achat_hc_defaut = 0.10403
-            
-        cout_abonnement_annuel = abonnement_val * (prime_fixe + 1.95) # Prime fixe + Majoration autoproducteur
-        cout_abonnement_kva_defaut = prime_fixe + 1.95
-        taxe_puissance_annuelle = 12.41 # Tarif dépassement horaire
-
-    elif offre_france_selectionnee == "Tarif vert":
-        st.sidebar.info("La modélisation du Tarif Vert est en cours de développement.")
-        abonnement_val = st.sidebar.number_input(
-            "Abonnement (kVA)",
-            min_value=37.0,
-            value=850.0,
-            step=10.0,
-            format="%.0f",
-            on_change=reset_simulation
-        )
-        cout_abonnement_kva_defaut = 30.0
-        prix_achat_hp_defaut = 0.25
-        prix_achat_hc_defaut = 0.20
+    if type_tarif == "Tarif bleu particuliers":
+        option_tarif = st.sidebar.radio("Option tarifaire", ["Base", "Heures Creuses"], horizontal=True, on_change=reset_simulation)
+        seuils_bleu = [3, 6, 9, 12, 15, 18, 24, 30, 36]
+        abonnement_val = st.sidebar.selectbox("Puissance souscrite (kVA)", options=seuils_bleu, index=1, on_change=reset_simulation)
+    elif type_tarif == "Tarif bleu pro":
+        option_tarif = st.sidebar.radio("Option tarifaire", ["Base", "Heures Creuses"], horizontal=True, on_change=reset_simulation)
+        seuils_bleu = [3, 6, 9, 12, 15, 18, 24, 30, 36]
+        abonnement_val = st.sidebar.selectbox("Puissance souscrite (kVA)", options=seuils_bleu, index=1, on_change=reset_simulation)
+    elif type_tarif == "Tarif jaune":
+        option_tarif = st.sidebar.radio("Version d'utilisation", ["Longue Utilisation (LU)", "Courte Utilisation (CU)"], horizontal=True, on_change=reset_simulation)
+        abonnement_val = st.sidebar.number_input("Puissance souscrite (kVA)", min_value=37, value=100, step=1, on_change=reset_simulation)
+    else: # Tarif vert
+        option_tarif = "Standard"
+        abonnement_val = st.sidebar.number_input("Puissance souscrite (kVA)", min_value=37, value=100, step=1, on_change=reset_simulation)
 
     st.sidebar.markdown("""
         <div style="font-size: 0.8rem; color: #666; margin-top: -10px; margin-bottom: 10px;">
@@ -677,7 +573,6 @@ st.sidebar.write("📈 **Étape 4 : Consommation énergétique**")
 profil_conso = st.sidebar.selectbox(
     "Type de bâtiment",
     ["Résidentiel", "Tertiaire / Bureaux", "Industriel"],
-    index=2,
     on_change=reset_simulation
 )
 
@@ -696,7 +591,6 @@ if profil_conso != "Industriel":
 mode_conso = st.sidebar.radio(
     "Données de consommation",
     modes_disponibles,
-    index=len(modes_disponibles)-1,
     horizontal=False,
     on_change=reset_simulation
 )
@@ -767,221 +661,16 @@ elif mode_conso == "Saisie manuelle (kWh)":
             </div>
             """.replace(",", " "), unsafe_allow_html=True)
 
-# Définition de la courbe de conso avant le bouton simuler
-if mode_conso == "Saisie manuelle (kWh)":
-    courbe_conso = generer_profil_synthetique(profil_conso, conso_annuelle_kwh)
-elif mode_conso == "Estimation automatique":
-    courbe_conso = generer_profil_synthetique(profil_conso, conso_annuelle_kwh)
-else:
-    if "courbe_charge_file" in st.session_state and st.session_state.courbe_charge_file:
-        courbe_conso = st.session_state.courbe_charge_file
-        conso_annuelle_kwh = sum(courbe_conso)
-    else:
-        courbe_conso = [0.0] * 8760
-        conso_annuelle_kwh = 0
-
-# --- ÉTAPE 5 : PARAMÈTRES FINANCIERS ---
-st.sidebar.write("💰 **Étape 5 : Paramètres financiers**")
-
-# Calcul du CAPEX PV estimé selon le type de toiture
-coef_suisse = 1.1 if st.session_state.pays_selectionne == "Suisse" else 1.0
-
-capex_pv_estime = 850 * coef_suisse # Base par défaut (Plat simple)
-if type_toit == "Plat":
-    if materiau == "Gravier":
-        capex_pv_estime = 893 * coef_suisse
-    elif materiau == "Bitumineux":
-        capex_pv_estime = 935 * coef_suisse
-else:  # Incliné
-    if materiau == "Tôle":
-        capex_pv_estime = 978 * coef_suisse
-    elif materiau == "Tuile":
-        capex_pv_estime = 1020 * coef_suisse
-    elif materiau == "Eternit":
-        capex_pv_estime = 1063 * coef_suisse
-
-col_achat, col_vente = st.sidebar.columns(2)
-with col_achat:
-    if "location" in scénario_investissement:
-        prix_achat = 0.0 # On ne paye pas le réseau dans ce cas
-        prix_revente_locataire = st.number_input(f"Tarif vente au locataire ({devise}/kWh)", min_value=0.0, value=0.20, step=0.01, on_change=reset_simulation)
-    else:
-        # Valeurs par défaut dynamiques si Tarif Bleu Particulier
-        if st.session_state.pays_selectionne == "France" and offre_france_selectionnee == "Tarif bleu particulier":
-            prix_achat = st.number_input(f"Prix Achat électricité ({devise}/kWh)", min_value=0.0, value=prix_achat_hp_defaut, step=0.0001, format="%.4f", on_change=reset_simulation, help="Prix Heures Pleines pour le Tarif Bleu Particulier.")
-        else:
-            prix_achat = st.number_input(f"Prix Achat électricité ({devise}/kWh)", min_value=0.0, value=0.25, step=0.01, on_change=reset_simulation)
-        prix_revente_locataire = 0.0
-with col_vente:
-    prix_vente = st.number_input(f"Prix vente surplus électricité ({devise}/kWh)", min_value=0.0, value=0.05, step=0.01, on_change=reset_simulation)
-
-duree_projet = st.sidebar.number_input("Durée de vie du projet (ans)", min_value=1, max_value=50, value=25, on_change=reset_simulation)
-
-# --- COÛTS D'INSTALLATION (REPLACÉS DANS ÉTAPE 5) ---
-st.sidebar.write("**Investissement initial**")
-capex_pv_unit = st.sidebar.number_input(f"Investissement PV ({devise}/kWc)", min_value=0, value=int(capex_pv_estime), step=50, on_change=reset_simulation, help=f"Valeur estimée pour une toiture {type_toit.lower()} {materiau.lower()}.")
-if st.session_state.get("simuler_batterie", True):
-    capex_batt_unit = st.sidebar.number_input(f"Investissement Batterie ({devise}/kWh)", min_value=0, value=int(350 * coef_suisse), step=50, on_change=reset_simulation)
-else:
-    capex_batt_unit = 0.0
-
-st.sidebar.write("**Frais opérationnels annuels**")
-opex_pv_unit = st.sidebar.number_input(f"Frais opérationnels PV ({devise}/kWc/an)", min_value=0.0, value=6.0 * coef_suisse, step=1.0, on_change=reset_simulation)
-if st.session_state.get("simuler_batterie", True):
-    opex_batt_unit = st.sidebar.number_input(f"Frais opérationnels Batterie ({devise}/kWh/an)", min_value=0.0, value=3.0 * coef_suisse, step=1.0, on_change=reset_simulation)
-else:
-    opex_batt_unit = 0.0
-
-# Conversion kVA ou Amp en kW
-# En résidentiel/tertiaire, 1 kVA ≈ 1 kW.
-if unite_intro == "Ampères":
-    puissance_intro_kw = (400 * intro_val * 1.732) / 1000
-else:
-    puissance_intro_kw = intro_val
-
-# --- OBJECTIF DU SYSTÈME ---
-st.sidebar.markdown("<h3 style='font-size: 1.2rem; font-weight: bold;'>Objectif du système</h3>", unsafe_allow_html=True)
-mode_ideal = st.sidebar.radio(
-    "Objectif du système",
-    [
-        "Favoriser l'autonomie sur site",
-        "Favoriser l'investissement (ROI < 7,5 ans)"
-    ],
-    index=1,
-    label_visibility="collapsed",
-    on_change=reset_simulation,
-    help="**Autonomie** : Max d'autoproduction avec économies optimales.\n\n**Investissement** : Max d'économies avec un ROI inférieur à 7,5 ans."
-)
-
-if "optimiser_avec_options" not in st.session_state:
-    st.session_state.optimiser_avec_options = False
-
-def toggle_optim_options():
-    st.session_state.optimiser_avec_options = not st.session_state.optimiser_avec_options
-    reset_simulation()
-
-st.sidebar.checkbox(
-    "Optimiser le système idéal avec les options avancées",
-    value=st.session_state.optimiser_avec_options,
-    on_change=toggle_optim_options,
-    help="Si coché, la recherche du système idéal (PV/Batterie) tiendra compte des revenus d'écrêtage, d'arbitrage et des services systèmes."
-)
-optimiser_avec_options_val = st.session_state.optimiser_avec_options
-
-simuler_batterie = st.sidebar.toggle("Simuler une batterie", value=True, key="simuler_batterie", on_change=reset_simulation)
-
-# Options avancées batterie
-autoriser_ecretage = False
-autoriser_services = False
-revenu_services_unit = 100000.0
-taxe_puissance_annuelle = 7.0 if st.session_state.pays_selectionne == "Suisse" else 6.0
-cout_abonnement_kva = 30.0 # Valeur par défaut
-
-if simuler_batterie:
-    st.sidebar.markdown("<div style='margin-left: 20px;'>", unsafe_allow_html=True)
-    autoriser_ecretage = st.sidebar.checkbox("Autoriser l'écrêtement de pointe", value=False, on_change=reset_simulation)
-    if autoriser_ecretage:
-        if st.session_state.pays_selectionne == "France":
-            # Pour la France, les tarifs et seuils sont désormais automatiques
-            st.sidebar.info("🎯 Lissage des pointes actif : décharge progressive 50/50 (Batterie/Réseau).")
-            
-            # Tarifs par défaut selon l'offre
-            if offre_france_selectionnee == "Tarif jaune":
-                taxe_puissance_annuelle = 12.41
-                cout_abonnement_kva = cout_abonnement_kva_defaut
-            else: # Tarifs Bleus
-                taxe_puissance_annuelle = 12.41 if abonnement_val >= 36 else 0.0
-                cout_abonnement_kva = cout_abonnement_kva_defaut
-            
-            if abonnement_val < 36:
-                st.sidebar.info("💡 Pour les abonnements < 36 kVA, le peak shaving permet principalement d'éviter les disjonctions (pas de gain financier direct sur les dépassements).")
-            
-            # Paramètres internes automatiques pour la France
-            mode_ecretage = "Optimiser l'abonnement"
-            nouvel_abonnement = abonnement_val
-        else: # Suisse
-            mode_ecretage = "Réduire les dépassements"
-            nouvel_abonnement = abonnement_val
-            taxe_puissance_annuelle = st.sidebar.number_input(f"Taxe puissance ({devise}/kW/mois)", min_value=0.0, value=7.0, step=0.5, format="%.1f", on_change=reset_simulation, help="Chaque mois est facturé un montant basé sur la puissance maximale atteinte chaque mois.")
-            st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {taxe_puissance_annuelle:,.1f} {devise}/kW/mois</div>'.replace(",", " "), unsafe_allow_html=True)
-    else:
-        mode_ecretage = "Réduire les dépassements"
-        nouvel_abonnement = abonnement_val
-        taxe_puissance_annuelle = 0.0
-        cout_abonnement_kva = 0.0
-    
-    autoriser_services = st.sidebar.checkbox("Autoriser la participation aux services systèmes", value=False, on_change=reset_simulation)
-    if autoriser_services:
-        revenu_services_unit = st.sidebar.number_input(f"Revenu services systèmes ({devise}/MWh/an)", min_value=0, value=100000, step=1000, format="%d", on_change=reset_simulation)
-        st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {revenu_services_unit:,.0f} {devise}/MWh/an</div>'.replace(",", " "), unsafe_allow_html=True)
-
-    autoriser_arbitrage = st.sidebar.checkbox("Autoriser l'arbitrage sur le marché Spot", value=False, on_change=reset_simulation, help="Si activé, la batterie se chargera sur le réseau pendant les heures où les prix du marché sont les plus bas pour restituer l'énergie pendant les pics de prix.")
-    if autoriser_arbitrage:
-        st.sidebar.info("📈 L'arbitrage utilise les prix dynamiques du marché Spot.")
-        autoriser_prix_dynamiques = True 
-    else:
-        autoriser_prix_dynamiques = False
-
-    st.sidebar.markdown("</div>", unsafe_allow_html=True)
-
-# --- BOUTON SIMULER ---
-st.sidebar.write("")
-
-btn_lancer_simulation = st.sidebar.button("🚀 Simuler", use_container_width=True, type="primary")
-
-if "simulation_lancee" not in st.session_state:
-    st.session_state.simulation_lancee = False
-if "parametres_modifies" not in st.session_state:
-    st.session_state.parametres_modifies = False
-
-if btn_lancer_simulation:
-    st.session_state.simulation_lancee = True
-    st.session_state.parametres_modifies = False
-    
-    # Figer les paramètres pour la simulation
-    st.session_state.params_valides = {
-        "adresse": adresse,
-        "type_toit": type_toit,
-        "materiau": materiau,
-        "donnees_pans": [p.copy() for p in donnees_pans],
-        "mode_mesure": mode_mesure,
-        "unite_intro": unite_intro,
-        "intro_val": intro_val,
-        "abonnement_val": abonnement_val,
-        "offre_france": offre_france_selectionnee if st.session_state.pays_selectionne == "France" else None,
-        "prix_achat_hc_defaut": prix_achat_hc_defaut if st.session_state.pays_selectionne == "France" and offre_france_selectionnee == "Tarif bleu particulier" else None,
-        "profil_conso": profil_conso,
-        "scénario_investissement": scénario_investissement,
-        "conso_annuelle_kwh": conso_annuelle_kwh,
-        "prix_achat": prix_achat,
-        "prix_vente": prix_vente,
-        "prix_revente_locataire": prix_revente_locataire,
-        "duree_projet": duree_projet,
-        "capex_pv_unit": capex_pv_unit,
-        "capex_batt_unit": capex_batt_unit,
-        "opex_pv_unit": opex_pv_unit,
-        "opex_batt_unit": opex_batt_unit,
-        "simuler_batterie": simuler_batterie,
-        "mode_ideal": mode_ideal,
-        "optimiser_avec_options": optimiser_avec_options_val,
-        "autoriser_prix_dynamiques": autoriser_prix_dynamiques if 'autoriser_prix_dynamiques' in locals() else False,
-        "autoriser_ecretage": autoriser_ecretage,
-        "autoriser_services": autoriser_services,
-        "autoriser_arbitrage": autoriser_arbitrage if 'autoriser_arbitrage' in locals() else False,
-        "revenu_services_unit": revenu_services_unit,
-        "taxe_puissance_annuelle": taxe_puissance_annuelle,
-        "cout_abonnement_kva": cout_abonnement_kva,
-        "courbe_conso": courbe_conso.copy() if 'courbe_conso' in locals() else None,
-        "devise": devise,
-        "variante_plat": variante_plat if 'variante_plat' in locals() else None,
-        "version_jaune": version_jaune if 'version_jaune' in locals() else None,
-        "option_pro": option_pro if 'option_pro' in locals() else None
-    }
-
-if mode_conso == "Télécharger une courbe de charge":
+elif mode_conso == "Télécharger une courbe de charge":
+    st.sidebar.markdown("""
+        <div style="font-size: 0.8rem; color: #666; margin-bottom: 5px;">
+            📥 Télécharger une courbe de charge
+        </div>
+        """, unsafe_allow_html=True)
     fichier_conso = st.sidebar.file_uploader(
         "Télécharger votre courbe de charge (CSV ou Excel)",
         type=["csv", "xlsx"],
+        label_visibility="collapsed",
         help="Format requis : Un fichier avec deux colonnes (Date/Heure et Valeur). L'outil détecte automatiquement si les données sont en kW (Puissance) ou kWh (Énergie). Supporte les pas de 15 min, 30 min ou 1h."
     )
     if fichier_conso:
@@ -1055,6 +744,229 @@ if mode_conso == "Télécharger une courbe de charge":
         except Exception as e:
             st.sidebar.error(f"Erreur lors de la lecture du fichier : {e}")
 
+# Définition de la courbe de conso avant le bouton simuler
+if mode_conso == "Saisie manuelle (kWh)":
+    courbe_conso = generer_profil_synthetique(profil_conso, conso_annuelle_kwh)
+elif mode_conso == "Estimation automatique":
+    courbe_conso = generer_profil_synthetique(profil_conso, conso_annuelle_kwh)
+else:
+    if "courbe_charge_file" in st.session_state and st.session_state.courbe_charge_file:
+        courbe_conso = st.session_state.courbe_charge_file
+        conso_annuelle_kwh = sum(courbe_conso)
+    else:
+        courbe_conso = [0.0] * 8760
+        conso_annuelle_kwh = 0
+
+# --- ÉTAPE 5 : PARAMÈTRES FINANCIERS ---
+st.sidebar.write("💰 **Étape 5 : Paramètres financiers**")
+
+# Calcul du CAPEX PV estimé selon le type de toiture
+coef_suisse = 1.1 if st.session_state.pays_selectionne == "Suisse" else 1.0
+
+capex_pv_estime = 850 * coef_suisse # Base par défaut (Plat simple)
+if type_toit == "Plat":
+    if materiau == "Gravier":
+        capex_pv_estime = 893 * coef_suisse
+    elif materiau == "Bitumineux":
+        capex_pv_estime = 935 * coef_suisse
+else:  # Incliné
+    if materiau == "Tôle":
+        capex_pv_estime = 978 * coef_suisse
+    elif materiau == "Tuile":
+        capex_pv_estime = 1020 * coef_suisse
+    elif materiau == "Eternit":
+        capex_pv_estime = 1063 * coef_suisse
+
+col_achat, col_vente = st.sidebar.columns(2)
+with col_achat:
+    if "location" in scénario_investissement:
+        prix_achat = 0.0 # On ne paye pas le réseau dans ce cas
+        prix_revente_locataire = st.number_input(f"Tarif vente au locataire ({devise}/kWh)", min_value=0.0, value=0.20, step=0.01, on_change=reset_simulation)
+        autoriser_prix_dynamiques = False
+    else:
+        # Option prix dynamiques
+        autoriser_prix_dynamiques = st.checkbox("Utiliser les prix dynamiques (Spot)", value=False, on_change=reset_simulation, help="Si activé, l'outil récupère les prix du marché de gros (Day-Ahead) pour simuler l'arbitrage et les économies.")
+        if autoriser_prix_dynamiques:
+            prix_achat = 0.0 # Sera écrasé par le profil dynamique
+            st.info("📈 Prix dynamiques activés. Les prix d'achat fixes sont désactivés.")
+            prix_revente_locataire = 0.0
+        else:
+            prix_achat = st.number_input(f"Prix Achat électricité ({devise}/kWh)", min_value=0.0, value=0.25, step=0.01, on_change=reset_simulation)
+            prix_revente_locataire = 0.0
+with col_vente:
+    prix_vente = st.number_input(f"Prix vente surplus électricité ({devise}/kWh)", min_value=0.0, value=0.05, step=0.01, on_change=reset_simulation)
+
+duree_projet = st.sidebar.number_input("Durée de vie du projet (ans)", min_value=1, max_value=50, value=25, on_change=reset_simulation)
+
+# --- COÛTS D'INSTALLATION (REPLACÉS DANS ÉTAPE 5) ---
+st.sidebar.write("**Investissement initial**")
+capex_pv_unit = st.sidebar.number_input(f"Investissement PV ({devise}/kWc)", min_value=0, value=int(capex_pv_estime), step=50, on_change=reset_simulation, help=f"Valeur estimée pour une toiture {type_toit.lower()} {materiau.lower()}.")
+if st.session_state.get("simuler_batterie", True):
+    capex_batt_unit = st.sidebar.number_input(f"Investissement Batterie ({devise}/kWh)", min_value=0, value=int(350 * coef_suisse), step=50, on_change=reset_simulation)
+else:
+    capex_batt_unit = 0.0
+
+st.sidebar.write("**Frais opérationnels annuels**")
+opex_pv_unit = st.sidebar.number_input(f"Frais opérationnels PV ({devise}/kWc/an)", min_value=0.0, value=6.0 * coef_suisse, step=1.0, on_change=reset_simulation)
+if st.session_state.get("simuler_batterie", True):
+    opex_batt_unit = st.sidebar.number_input(f"Frais opérationnels Batterie ({devise}/kWh/an)", min_value=0.0, value=3.0 * coef_suisse, step=1.0, on_change=reset_simulation)
+else:
+    opex_batt_unit = 0.0
+
+# Conversion kVA ou Amp en kW
+# En résidentiel/tertiaire, 1 kVA ≈ 1 kW.
+if unite_intro == "Ampères":
+    puissance_intro_kw = (400 * intro_val * 1.732) / 1000
+else:
+    puissance_intro_kw = intro_val
+
+# --- OBJECTIF DU SYSTÈME ---
+st.sidebar.markdown("<h3 style='font-size: 1.2rem; font-weight: bold;'>Objectif du système</h3>", unsafe_allow_html=True)
+mode_ideal = st.sidebar.radio(
+    "Objectif du système",
+    [
+        "Favoriser l'autonomie sur site",
+        "Favoriser l'investissement (ROI < 7,5 ans)"
+    ],
+    label_visibility="collapsed",
+    on_change=reset_simulation,
+    help="**Autonomie** : Max d'autoproduction avec économies optimales.\n\n**Investissement** : Max d'économies avec un ROI inférieur à 7,5 ans."
+)
+
+simuler_batterie = st.sidebar.toggle("Simuler une batterie", value=True, key="simuler_batterie", on_change=reset_simulation)
+
+# Options avancées batterie
+autoriser_ecretage = False
+autoriser_services = False
+revenu_services_unit = 100000.0
+taxe_puissance_annuelle = 7.0 if st.session_state.pays_selectionne == "Suisse" else 6.0
+
+if simuler_batterie:
+    st.sidebar.markdown("<div style='margin-left: 20px;'>", unsafe_allow_html=True)
+    autoriser_ecretage = st.sidebar.checkbox("Autoriser l'écrêtement de pointe", value=False, on_change=reset_simulation)
+    if autoriser_ecretage:
+        if st.session_state.pays_selectionne == "France":
+            # --- RÉCUPÉRATION DYNAMIQUE DES TARIFS POUR AFFICHAGE ---
+            current_abo_val = 0.0
+            current_depassement = 12.41 # Valeur par défaut Tarif Jaune
+            
+            if type_tarif == "Tarif bleu particuliers":
+                prices_bleu_res_hc = {3: 0, 6: 141.60, 9: 176.16, 12: 209.16, 15: 239.88, 18: 271.80, 24: 340.20, 30: 402.36, 36: 465.00}
+                current_abo_val = prices_bleu_res_hc.get(abonnement_val, 0)
+                current_depassement = 0.0 # Pas de dépassement facturé en Tarif Bleu particulier
+            elif type_tarif == "Tarif bleu pro":
+                if option_tarif == "Base":
+                    prices_bleu_non_res_base = {3: 134.04, 6: 166.92, 9: 198.60, 12: 230.28, 15: 261.48, 18: 291.60, 24: 357.36, 30: 422.52, 36: 487.20}
+                    current_abo_val = prices_bleu_non_res_base.get(abonnement_val, 0)
+                else:
+                    prices_bleu_non_res_hc = {6: 167.40, 9: 200.16, 12: 233.76, 15: 265.68, 18: 299.04, 24: 371.40, 30: 436.32, 36: 501.84}
+                    current_abo_val = prices_bleu_non_res_hc.get(abonnement_val, 0)
+                current_depassement = 0.0 # Pas de dépassement facturé en Tarif Bleu pro
+            elif type_tarif == "Tarif jaune":
+                if "Longue Utilisation" in option_tarif:
+                    current_abo_val = 38.27 * abonnement_val
+                else:
+                    current_abo_val = 26.44 * abonnement_val
+                current_depassement = 12.41
+            
+            # Affichage des informations de tarif
+            st.sidebar.markdown(f"""
+                <div style="font-size: 0.8rem; color: #666; background-color: #f0f2f6; padding: 5px; border-radius: 5px; margin-bottom: 10px;">
+                    💰 <b>Infos contrat :</b><br>
+                    • Abonnement : {current_abo_val:,.2f} {devise}/an<br>
+                    • Dépassement : {current_depassement:,.2f} {devise}/heure
+                </div>
+            """.replace(",", " "), unsafe_allow_html=True)
+
+            # Pour la France, on demande le tarif de dépassement si l'abonnement le permet (BT > 36 kVA en général, mais on laisse la main)
+            taxe_puissance_annuelle = st.sidebar.number_input(f"Tarif dépassement ({devise}/heure)", min_value=0.0, value=float(current_depassement if current_depassement > 0 else 12.65), step=0.1, format="%.2f", on_change=reset_simulation, help="Frais par heure de dépassement de la puissance souscrite.")
+            st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {taxe_puissance_annuelle:,.2f} {devise}/heure</div>'.replace(",", " "), unsafe_allow_html=True)
+            if abonnement_val < 36:
+                st.sidebar.info("💡 Pour les abonnements < 36 kVA, le peak shaving permet principalement d'éviter les disjonctions (pas de gain financier direct).")
+            else:
+                st.sidebar.caption("Note: Tarif par défaut de 12.65 €/h pour les clients BT > 36 kVA.")
+        else: # Suisse
+            taxe_puissance_annuelle = st.sidebar.number_input(f"Taxe puissance ({devise}/kW/mois)", min_value=0.0, value=7.0, step=0.5, format="%.1f", on_change=reset_simulation, help="Chaque mois est facturé un montant basé sur la puissance maximale atteinte chaque mois.")
+            st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {taxe_puissance_annuelle:,.1f} {devise}/kW/mois</div>'.replace(",", " "), unsafe_allow_html=True)
+    
+    autoriser_services = st.sidebar.checkbox("Autoriser la participation aux services systèmes", value=False, on_change=reset_simulation)
+    if autoriser_services:
+        revenu_services_unit = st.sidebar.number_input(f"Revenu services systèmes ({devise}/MWh/an)", min_value=0, value=100000, step=1000, format="%d", on_change=reset_simulation)
+        st.sidebar.markdown(f'<div style="font-size: 0.8rem; color: #666; margin-top: -15px; margin-bottom: 10px;">👉 {revenu_services_unit:,.0f} {devise}/MWh/an</div>'.replace(",", " "), unsafe_allow_html=True)
+
+    autoriser_arbitrage = st.sidebar.checkbox("Autoriser l'arbitrage tarifaire (HC/HP)", value=False, on_change=reset_simulation)
+    if autoriser_arbitrage:
+        col_hc_p, col_hc_v = st.sidebar.columns(2)
+        with col_hc_p:
+            prix_hc = st.number_input(f"Prix Heures Creuses ({devise}/kWh)", min_value=0.0, value=0.18, step=0.01, on_change=reset_simulation)
+        with col_hc_v:
+            # On considère que HP est le prix d'achat normal
+            st.markdown(f"<div style='font-size: 0.8rem; color: #666; margin-top: 5px;'>HP : {prix_achat} {devise}/kWh</div>", unsafe_allow_html=True)
+        
+        st.sidebar.write("🕒 **Plages Heures Creuses**")
+        hc_start = st.sidebar.slider("Début HC", 0, 23, 22, on_change=reset_simulation)
+        hc_end = st.sidebar.slider("Fin HC", 0, 23, 6, on_change=reset_simulation)
+        st.sidebar.markdown(f"<div style='font-size: 0.8rem; color: #666; margin-top: -10px;'>Période : {hc_start}h à {hc_end}h</div>", unsafe_allow_html=True)
+    else:
+        prix_hc = 0.0
+        hc_start = 0
+        hc_end = 0
+
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
+# --- BOUTON SIMULER ---
+st.sidebar.write("")
+
+btn_lancer_simulation = st.sidebar.button("🚀 Simuler", use_container_width=True, type="primary")
+
+if "simulation_lancee" not in st.session_state:
+    st.session_state.simulation_lancee = False
+if "parametres_modifies" not in st.session_state:
+    st.session_state.parametres_modifies = False
+
+if btn_lancer_simulation:
+    st.session_state.simulation_lancee = True
+    st.session_state.parametres_modifies = False
+    
+    # Figer les paramètres pour la simulation
+    st.session_state.params_valides = {
+        "adresse": adresse,
+        "type_toit": type_toit,
+        "materiau": materiau,
+        "donnees_pans": [p.copy() for p in donnees_pans],
+        "mode_mesure": mode_mesure,
+        "unite_intro": unite_intro,
+        "intro_val": intro_val,
+        "abonnement_val": abonnement_val,
+        "profil_conso": profil_conso,
+        "scénario_investissement": scénario_investissement,
+        "conso_annuelle_kwh": conso_annuelle_kwh,
+        "prix_achat": prix_achat,
+        "prix_vente": prix_vente,
+        "prix_revente_locataire": prix_revente_locataire,
+        "duree_projet": duree_projet,
+        "capex_pv_unit": capex_pv_unit,
+        "capex_batt_unit": capex_batt_unit,
+        "opex_pv_unit": opex_pv_unit,
+        "opex_batt_unit": opex_batt_unit,
+        "simuler_batterie": simuler_batterie,
+        "mode_ideal": mode_ideal,
+        "autoriser_prix_dynamiques": autoriser_prix_dynamiques if 'autoriser_prix_dynamiques' in locals() else False,
+        "autoriser_ecretage": autoriser_ecretage,
+        "autoriser_services": autoriser_services,
+        "autoriser_arbitrage": autoriser_arbitrage if 'autoriser_arbitrage' in locals() else False,
+        "prix_hc": prix_hc if 'prix_hc' in locals() else 0.0,
+        "hc_start": hc_start if 'hc_start' in locals() else 0,
+        "hc_end": hc_end if 'hc_end' in locals() else 0,
+        "revenu_services_unit": revenu_services_unit,
+        "taxe_puissance_annuelle": taxe_puissance_annuelle,
+        "courbe_conso": courbe_conso.copy() if 'courbe_conso' in locals() else None,
+        "devise": devise,
+        "variante_plat": variante_plat if 'variante_plat' in locals() else None,
+        "type_tarif": type_tarif if 'type_tarif' in locals() else None,
+        "option_tarif": option_tarif if 'option_tarif' in locals() else None
+    }
+
 if st.session_state.get("simulation_lancee", False) and "params_valides" in st.session_state:
     # Récupération des paramètres figés
     pv = st.session_state.params_valides
@@ -1066,8 +978,6 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
     unite_intro_val = pv["unite_intro"]
     intro_val_val = pv["intro_val"]
     abonnement_val_val = pv.get("abonnement_val", intro_val_val)
-    offre_france_val = pv.get("offre_france")
-    prix_achat_hc_defaut_val = pv.get("prix_achat_hc_defaut")
     profil_conso_val = pv["profil_conso"]
     scénario_investissement_val = pv["scénario_investissement"]
     conso_annuelle_kwh_val = pv["conso_annuelle_kwh"]
@@ -1081,66 +991,102 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
     opex_batt_unit_val = pv["opex_batt_unit"]
     simuler_batterie_val = pv["simuler_batterie"]
     mode_ideal_val = pv["mode_ideal"]
-    optimiser_avec_options_val = pv.get("optimiser_avec_options", False)
     autoriser_prix_dynamiques_val = pv.get("autoriser_prix_dynamiques", False)
     autoriser_ecretage_val = pv.get("autoriser_ecretage", False)
     autoriser_services_val = pv.get("autoriser_services", False)
     autoriser_arbitrage_val = pv.get("autoriser_arbitrage", False)
     prix_hc_val = pv.get("prix_hc", 0.0)
-    version_jaune_val = pv.get("version_jaune")
-    option_pro_val = pv.get("option_pro")
     hc_start_val = pv.get("hc_start", 0)
     hc_end_val = pv.get("hc_end", 0)
     revenu_services_unit_val = pv.get("revenu_services_unit", 100000.0)
     taxe_puissance_annuelle_val = pv.get("taxe_puissance_annuelle", 6.0)
-    cout_abonnement_kva_val = pv.get("cout_abonnement_kva", 30.0)
     courbe_conso_val = pv["courbe_conso"]
     devise_val = pv["devise"]
     variante_plat_val = pv["variante_plat"]
+    type_tarif_val = pv.get("type_tarif")
+    option_tarif_val = pv.get("option_tarif")
+
+    # --- LOGIQUE PRIX RÉSEAU (FRANCE) ---
+    abonnement_annuel_val = 0.0
+    majoration_injection = 0.0
+    
+    if st.session_state.get("pays_selectionne") == "France":
+        seuils_kva_complets = [3, 6, 9, 12, 15, 18, 24, 30, 36, 42, 48, 60, 72, 84, 96, 108, 120, 132, 144, 156, 168, 180, 192, 204, 216, 228, 240, 250]
+        if type_tarif_val == "Tarif bleu particuliers":
+            majoration_injection = 9.60
+            if option_tarif_val == "Base":
+                prix_achat_val = 0.1412 # On prend les mêmes tarifs que HC HP mais moyennés ou selon image
+                # Image "Tarif Bleu Residentiel HC" montre 14.12 et 10.07. 
+                # L'image pour Base Residentiel n'est pas fournie mais l'utilisateur a fourni "Tarif bleu particuliers"
+                # Je vais chercher si une image correspond à Base Particuliers.
+                # Image 2: "TARIF BLEU - OPTION HEURES CREUSES RESIDENTIEL"
+                # Image 4: "TARIF BLEU - OPTION BASE NON-RESIDENTIEL"
+                # Si Base Particuliers n'est pas là, je vais extrapoler ou utiliser une valeur raisonnable.
+                # Attends, j'ai "Tarif bleu particuliers" et "Tarif bleu pro".
+                
+                # Tableaux de prix selon images:
+                # 1. Bleu Non-Res HC: Abo(6kVA)=167.40, HP=13.51 c, HC=9.89 c
+                # 2. Bleu Res HC: Abo(6kVA)=141.60, HP=14.12 c, HC=10.07 c, Major=9.60
+                # 4. Bleu Non-Res Base: Abo(6kVA)=166.92, Base=12.74 c, Major=9.60
+                
+                # Pour Bleu Particuliers Base (Image non fournie, je vais utiliser des valeurs proches du Res HC)
+                # En fait je vais définir des dictionnaires.
+                
+                prices_bleu_res_hc = {3: 0, 6: 141.60, 9: 176.16, 12: 209.16, 15: 239.88, 18: 271.80, 24: 340.20, 30: 402.36, 36: 465.00}
+                if option_tarif_val == "Base":
+                    # Faute d'image Base Particuliers, j'utilise les prix Base Non-Pro mais avec l'abo Res.
+                    # Ou j'extrapole. Généralement Base est un peu moins cher que HP.
+                    prix_achat_val = 0.1350
+                    abonnement_annuel_val = prices_bleu_res_hc.get(abonnement_val_val, 0)
+                else: # Heures Creuses
+                    prix_hp_local = 0.1412
+                    prix_hc_local = 0.1007
+                    abonnement_annuel_val = prices_bleu_res_hc.get(abonnement_val_val, 0)
+            
+            elif type_tarif_val == "Tarif bleu pro":
+                majoration_injection = 9.60
+                if option_tarif_val == "Base":
+                    # Image 4
+                    prices_bleu_non_res_base = {3: 134.04, 6: 166.92, 9: 198.60, 12: 230.28, 15: 261.48, 18: 291.60, 24: 357.36, 30: 422.52, 36: 487.20}
+                    prix_achat_val = 0.1274
+                    abonnement_annuel_val = prices_bleu_non_res_base.get(abonnement_val_val, 0)
+                else: # Heures Creuses
+                    # Image 1
+                    prices_bleu_non_res_hc = {6: 167.40, 9: 200.16, 12: 233.76, 15: 265.68, 18: 299.04, 24: 371.40, 30: 436.32, 36: 501.84}
+                    prix_hp_local = 0.1351
+                    prix_hc_local = 0.0989
+                    abonnement_annuel_val = prices_bleu_non_res_hc.get(abonnement_val_val, 0)
+            
+            elif type_tarif_val == "Tarif jaune":
+                # Image 5
+                majoration_injection = 1.95 * abonnement_val_val
+                if "Longue Utilisation" in option_tarif_val:
+                    abonnement_annuel_val = 38.27 * abonnement_val_val
+                    # On va simplifier les 4 prix en une moyenne ou gérer les saisons?
+                    # Hiver HP: 17.594, HC: 12.009 | Eté HP: 8.716, HC: 8.021
+                    # Pour le moment on prend une moyenne pondérée simple si pas de gestion fine
+                    prix_achat_val = 0.12 # Moyenne
+                    prix_hp_local = 0.14
+                    prix_hc_local = 0.10
+                else: # Courte Utilisation
+                    abonnement_annuel_val = 26.44 * abonnement_val_val
+                    prix_achat_val = 0.13
+                    prix_hp_local = 0.15
+                    prix_hc_local = 0.11
+                # Taxe dépassement Tarif Jaune
+                taxe_puissance_annuelle_val = 12.41
+            
+            # Application des prix HP/HC si option Heures Creuses ou Tarif Jaune
+            if (type_tarif_val.startswith("Tarif bleu") and option_tarif_val == "Heures Creuses") or type_tarif_val == "Tarif jaune":
+                autoriser_arbitrage_val = True
+                prix_achat_val = prix_hp_local
+                prix_hc_val = prix_hc_local
+                hc_start_val = 22
+                hc_end_val = 6
 
     # --- RÉCUPÉRATION PRIX DYNAMIQUES ---
     if autoriser_prix_dynamiques_val:
         vecteur_prix_achat = recuperer_prix_dynamiques(st.session_state.get("pays_selectionne", "France"))
-    elif offre_france_val == "Tarif jaune":
-        # Création d'un vecteur saisonnier et HP/HC pour le Tarif Jaune
-        # Hiver : Nov, Dec, Jan, Feb, Mar (Mois 11, 12, 1, 2, 3)
-        # Eté : Apr, May, Jun, Jul, Aug, Sep, Oct (Mois 4, 5, 6, 7, 8, 9, 10)
-        # HP: 6h-22h / HC: 22h-6h
-        
-        is_lu = "Longue Utilisation" in version_jaune_val if version_jaune_val else True
-        
-        # Tarifs (en €/kWh)
-        if is_lu:
-            p_hiver_hp, p_hiver_hc = 0.17594, 0.12009
-            p_ete_hp, p_ete_hc = 0.08716, 0.08021
-        else:
-            p_hiver_hp, p_hiver_hc = 0.18808, 0.12751
-            p_ete_hp, p_ete_hc = 0.08839, 0.08056
-            
-        vecteur_prix_achat = []
-        for h in range(8760):
-            heure = h % 24
-            # On approxime le mois (30 jours par mois)
-            mois = ((h // (24 * 30)) % 12) + 1
-            
-            est_hiver = mois in [1, 2, 3, 11, 12]
-            est_hp = 6 <= heure < 22
-            
-            if est_hiver:
-                vecteur_prix_achat.append(p_hiver_hp if est_hp else p_hiver_hc)
-            else:
-                vecteur_prix_achat.append(p_ete_hp if est_hp else p_ete_hc)
-
-    elif offre_france_val == "Tarif bleu particulier" and prix_achat_hc_defaut_val:
-        # Création d'un vecteur HP/HC pour le Tarif Bleu Particulier
-        # Heures creuses Enedis typiques: 22h-6h (8h de HC)
-        vecteur_prix_achat = []
-        for h in range(8760):
-            heure = h % 24
-            if 6 <= heure < 22: # Heures Pleines (16h)
-                vecteur_prix_achat.append(prix_achat_val)
-            else: # Heures Creuses (8h)
-                vecteur_prix_achat.append(prix_achat_hc_defaut_val)
     else:
         vecteur_prix_achat = [prix_achat_val] * 8760
 
@@ -1307,7 +1253,8 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
             # Affichage Introduction
             if st.session_state.get("pays_selectionne") == "France":
                 # Affichage Abonnement pour la France
-                st.write(f"**Abonnement :** {abonnement_val_val:,.1f} kVA".replace(",", " "))
+                st.write(f"**Abonnement :** {type_tarif_val} - {option_tarif_val}")
+                st.write(f"**Puissance souscrite :** {abonnement_val_val:,.1f} kVA".replace(",", " "))
                 
                 # Affichage Introduction
                 if unite_intro_val == "kVA":
@@ -1331,9 +1278,10 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                 st.write(f"**{label_conso}** {int(round(conso_annuelle_kwh_val/1000)):,} MWh/an".replace(",", " "))
             else:
                 st.write(f"**{label_conso}** {conso_annuelle_kwh_val:,.0f} kWh/an".replace(",", " "))
-            
-            p_pointe_estimee = max(courbe_conso_val_calc) if courbe_conso_val_calc else 0
-            st.write(f"**Puissance de pointe estimée :** {p_pointe_estimee:,.1f} kW".replace(",", " "))
+
+            # Ajout de la puissance de pointe de la consommation
+            p_pointe_conso = max(courbe_conso_val_calc) if courbe_conso_val_calc else 0
+            st.write(f"**Puissance de pointe (conso) :** {p_pointe_conso:,.1f} kW".replace(",", " "))
 
             st.write(f"**Toiture :** {type_toit_val} ({materiau_val})")
             st.write("**Potentiel par orientation :**")
@@ -1460,9 +1408,13 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
         
         # Gain annuel = (Auto-consommé * Prix Achat/Locataire) + (Vendu * Prix Vente) - Maintenance
         # economies_elec_s2 est déjà calculé ci-dessus pour le PV seul
+        vente_surplus_s2 = surplus_injecte_kwh * prix_vente_val
             
-        vente_surplus_s2 = (surplus_injecte_kwh * prix_vente_val)
-        gain_annuel_s2 = economies_elec_s2 + vente_surplus_s2 - opex_total_s2
+        if st.session_state.get("pays_selectionne") == "France":
+            # On injecte l'abonnement et la majoration dans le gain annuel pour le calcul du ROI
+            gain_annuel_s2 = economies_elec_s2 + vente_surplus_s2 - opex_total_s2 - abonnement_annuel_val - majoration_injection
+        else:
+            gain_annuel_s2 = economies_elec_s2 + vente_surplus_s2 - opex_total_s2
         
         roi_s2 = capex_pv_s2 / gain_annuel_s2 if gain_annuel_s2 > 0 else 0
         economies_totales_s2 = gain_annuel_s2 * duree_projet_val
@@ -1587,105 +1539,64 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                     p_batt_real_max = 0
                     total_charge_reseau = 0
                     
-                    # Pour suivre l'origine de l'énergie dans la batterie (Solaire vs Réseau)
-                    stock_solaire = 0.0 # Énergie stockée issue du PV (kWh)
-                    stock_reseau = 0.0  # Énergie stockée issue du réseau (kWh)
-                    
                     # Seuil pour l'arbitrage dynamique (on charge si prix < moyenne et décharge si prix > moyenne)
                     if autoriser_prix_dynamiques_val:
                         prix_moyen = sum(vecteur_prix_achat) / 8760
                         seuil_charge = prix_moyen * 0.8
                         seuil_decharge = prix_moyen * 1.1
-                
-                    # Calcul du surplus solaire attendu pour chaque jour (Production - Conso sur les heures de surplus)
-                    surplus_journalier_attendu_m = []
-                    for j in range(365):
-                        s_jour = 0
-                        for h in range(24):
-                            idx = j*24 + h
-                            s_jour += max(0, prod_h_test[idx] - courbe_conso_val_calc[idx])
-                        surplus_journalier_attendu_m.append(s_jour)
-                
+                    
                     for h_idx, (ph, ch) in enumerate(zip(prod_h_test, courbe_conso_val_calc)):
                         h_jour = h_idx % 24
-                        j_idx = h_idx // 24
                         prix_h = vecteur_prix_achat[h_idx]
-                    
-                        # Détermination si prix bas pour arbitrage Spot
-                        est_prix_bas = False
-                        if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val):
-                            prix_moyen = sum(vecteur_prix_achat) / 8760
-                            # Seuil de rentabilité : le prix doit être inférieur à 80% du prix moyen 
-                            est_prix_bas = prix_h < (prix_moyen * 0.8)
                         
-                            # Anticipation solaire STRICTE pour garantir 0 impact sur l'autoconsommation
-                            # On ne charge sur le réseau la nuit QUE s'il reste de la place APRÈS le surplus solaire attendu
-                            if est_prix_bas and 0 <= h_jour <= 6:
-                                surplus_prevu = surplus_journalier_attendu_m[j_idx]
-                                # Place libre maximale pour le réseau = Capacité utile - Surplus solaire prévu
-                                place_pour_reseau = max(0, cap_utile_b - surplus_prevu)
-                                if (stock_solaire + stock_reseau) >= place_pour_reseau:
-                                    est_prix_bas = False
-                                
-                                # --- PRIORITÉ 1 : LE SOLAIRE ---
-                                charge_sol = 0
-                                dech_sol = 0
-                                if ph >= ch:
-                                    # Consommation directe du solaire
-                                    auto_temp_kwh += ch
-                                    dispo_solaire = ph - ch
-                                    
-                                    # Charger la batterie avec le surplus solaire
-                                    charge_sol = min(dispo_solaire, (cap_utile_b - (stock_solaire + stock_reseau)) / RENDEMENT_CHARGE, p_batt_max_test)
-                                    stock_solaire += charge_sol * RENDEMENT_CHARGE
-                                    p_batt_real_max = max(p_batt_real_max, charge_sol)
-                                    p_max_net = max(p_max_net, 0)
-                                else:
-                                    # Solaire insuffisant
-                                    auto_temp_kwh += ph
-                                    besoin = ch - ph
-                                    
-                                    # Décharge batterie
-                                    total_stock = stock_solaire + stock_reseau
-                                    
-                                    # --- LOGIQUE DE LISSAGE (PEAK SHAVING INTELLIGENT) ---
-                                    # Si l'écrêtage est activé, on cherche à limiter le pic de soutirage
-                                    if autoriser_ecretage_val:
-                                        # --- LOGIQUE DE LISSAGE (50% Batterie / 50% Réseau) ---
-                                        # Nouveau : On couvre 50% du besoin peu importe le seuil
-                                        besoin_a_couvrir = besoin * 0.5
-                                        decharge_totale = min(besoin_a_couvrir / RENDEMENT_DECHARGE, total_stock, p_batt_max_test)
-                                    else:
-                                        # Si on est sous le seuil, on décharge normalement pour maximiser l'autoconsommation
-                                        decharge_totale = min(besoin / RENDEMENT_DECHARGE, total_stock, p_batt_max_test)
-                                    
-                                    if total_stock > 0:
-                                        ratio_sol = stock_solaire / total_stock
-                                        ratio_res = stock_reseau / total_stock
-                                        stock_solaire -= decharge_totale * ratio_sol
-                                        stock_reseau -= decharge_totale * ratio_res
-                                    
-                                    p_batt_real_max = max(p_batt_real_max, decharge_totale)
-                                    auto_temp_kwh += decharge_totale * RENDEMENT_DECHARGE
-                                    total_decharge_sim += decharge_totale * RENDEMENT_DECHARGE
-                                    p_max_net = max(p_max_net, besoin - decharge_totale * RENDEMENT_DECHARGE)
-                                    dech_sol = decharge_totale
+                        est_hc = False
+                        if autoriser_prix_dynamiques_val:
+                            est_hc = prix_h < seuil_charge
+                        elif hc_start_val < hc_end_val:
+                            est_hc = hc_start_val <= h_jour < hc_end_val
+                        else: # HC à cheval sur minuit (ex: 22h à 6h)
+                            est_hc = h_jour >= hc_start_val or h_jour < hc_end_val
 
-                        # --- PRIORITÉ 2 : L'ARBITRAGE RÉSEAU ---
-                        # On ne charge depuis le réseau que sur la puissance et capacité résiduelle
-                        if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val) and est_prix_bas and (stock_solaire + stock_reseau) < cap_utile_b:
-                            # Puissance restante de l'onduleur
-                            p_dispo_batt = p_batt_max_test - (charge_sol if ph >= ch else dech_sol)
-                            if p_dispo_batt > 0:
-                                charge_res = min(p_dispo_batt, (cap_utile_b - (stock_solaire + stock_reseau)) / RENDEMENT_CHARGE)
-                                stock_reseau += charge_res * RENDEMENT_CHARGE
+                        if ph >= ch:
+                            auto_temp_kwh += ch
+                            dispo = ph - ch
+                            charge = min(dispo, (cap_utile_b - s_temp) / RENDEMENT_CHARGE, p_batt_max_test)
+                            s_temp += charge * RENDEMENT_CHARGE
+                            p_batt_real_max = max(p_batt_real_max, charge)
+                            soc_points.append(s_temp)
+                            p_max_net = max(p_max_net, 0)
+                        else:
+                            auto_temp_kwh += ph
+                            besoin = ch - ph
+                            
+                            # Logique d'optimisation d'écrêtage (Peak Shaving) :
+                            # Au lieu de décharger tout le besoin, on ne décharge que 50% pour lisser l'appel réseau
+                            besoin_a_couvrir = besoin
+                            if autoriser_ecretage_val:
+                                besoin_a_couvrir = besoin * 0.5
+
+                            # Si on est en HP et qu'on a de l'arbitrage, ou si on a simplement du besoin
+                            decharge = min(besoin_a_couvrir / RENDEMENT_DECHARGE, s_temp, p_batt_max_test)
+                            s_temp -= decharge
+                            p_batt_real_max = max(p_batt_real_max, decharge)
+                            auto_temp_kwh += decharge * RENDEMENT_DECHARGE
+                            total_decharge_sim += decharge * RENDEMENT_DECHARGE
+                            
+                            # Arbitrage : Charge depuis le réseau en HC (ou prix bas) si la batterie n'est pas pleine
+                            if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val) and est_hc and s_temp < cap_utile_b:
+                                # On charge ce qu'on peut depuis le réseau (limité par p_batt_max_test)
+                                # On considère que la charge réseau vient après avoir couvert le besoin du bâtiment
+                                dispo_charge = p_batt_max_test # Puissance max charge
+                                charge_res = min(dispo_charge, (cap_utile_b - s_temp) / RENDEMENT_CHARGE)
+                                s_temp += charge_res * RENDEMENT_CHARGE
                                 total_charge_reseau += charge_res
-                                p_batt_real_max = max(p_batt_real_max, (charge_res + charge_sol) if ph >= ch else (charge_res + dech_sol))
-                        
-                        soc_points.append(stock_solaire + stock_reseau)
+                                p_batt_real_max = max(p_batt_real_max, charge_res)
+
+                            soc_points.append(s_temp)
+                            p_max_net = max(p_max_net, besoin - decharge * RENDEMENT_DECHARGE)
                     
                     cyclage_annuel = total_decharge_sim / cap_b if cap_b > 0 else 0
-                    remplissage_moyen = (sum(soc_points) / len(soc_points)) / cap_b * 100 if (cap_b > 0 and len(soc_points) > 0) else 0
+                    remplissage_moyen = (sum(soc_points) / len(soc_points)) / cap_b * 100 if cap_b > 0 else 0
                     ratio_puissance = (p_batt_real_max / p_batt_max_test * 100) if p_batt_max_test > 0 else 0
                     
                     prod_annuelle_test = sum(prod_h_test)
@@ -1700,69 +1611,34 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                     elif autoriser_prix_dynamiques_val:
                         # Gain = Somme des économies horaires
                         gain_annuel_brut = (surplus_test * prix_vente_val)
-                        s_temp_sim_sol = 0.0
-                        s_temp_sim_res = 0.0
+                        s_temp_sim = 0.0
                         cap_utile_sim = cap_b * DOD
                         p_batt_max_sim = cap_b * C_RATE
-                        
-                        # Surplus journalier attendu pour l'anticipation
-                        surplus_journalier_sim = []
-                        for j in range(365):
-                            s_j = 0
-                            for h in range(24):
-                                idx_j = j*24 + h
-                                s_j += max(0, prod_h_test[idx_j] - courbe_conso_val_calc[idx_j])
-                            surplus_journalier_sim.append(s_j)
-                        
                         for h_idx, (ph, ch) in enumerate(zip(prod_h_test, courbe_conso_val_calc)):
                             prix_h = vecteur_prix_achat[h_idx]
-                            h_j = h_idx % 24
-                            j_j = h_idx // 24
-                            
-                            # PRIORITÉ 1 : SOLAIRE
-                            charge_s = 0
-                            dech_s = 0
                             if ph >= ch:
                                 gain_annuel_brut += ch * prix_h
                                 dispo = ph - ch
-                                charge_s = min(dispo, (cap_utile_sim - (s_temp_sim_sol + s_temp_sim_res)) / RENDEMENT_CHARGE, p_batt_max_sim)
-                                s_temp_sim_sol += charge_s * RENDEMENT_CHARGE
+                                charge = min(dispo, (cap_utile_sim - s_temp_sim) / RENDEMENT_CHARGE, p_batt_max_sim)
+                                s_temp_sim += charge * RENDEMENT_CHARGE
                             else:
-                                auto_h = ph
                                 besoin = ch - ph
-                                total_s_sim = s_temp_sim_sol + s_temp_sim_res
-                                decharge_t = min(besoin / RENDEMENT_DECHARGE, total_s_sim, p_batt_max_sim)
-                                if total_s_sim > 0:
-                                    r_sol = s_temp_sim_sol / total_s_sim
-                                    r_res = s_temp_sim_res / total_s_sim
-                                    s_temp_sim_sol -= decharge_t * r_sol
-                                    s_temp_sim_res -= decharge_t * r_res
-                                dech_s = decharge_t
-                                auto_h += decharge_t * RENDEMENT_DECHARGE
-                                gain_annuel_brut += auto_h * prix_h
-
-                            # PRIORITÉ 2 : ARBITRAGE
-                            if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val):
+                                decharge = min(besoin / RENDEMENT_DECHARGE, s_temp_sim, p_batt_max_sim)
+                                s_temp_sim -= decharge
+                                gain_annuel_brut += (ph + decharge * RENDEMENT_DECHARGE) * prix_h
+                                
+                                # Coût charge réseau arbitrage
                                 prix_moyen = sum(vecteur_prix_achat) / 8760
-                                if prix_h < (prix_moyen * 0.8):
-                                    est_prix_bas_sim = True
-                                    if 0 <= h_j <= 6:
-                                        place_r = max(0, cap_utile_sim - surplus_journalier_sim[j_j])
-                                        if (s_temp_sim_sol + s_temp_sim_res) >= place_r:
-                                            est_prix_bas_sim = False
-                                    
-                                    if est_prix_bas_sim:
-                                        p_dispo = p_batt_max_sim - (charge_s if ph >= ch else dech_s)
-                                        if p_dispo > 0:
-                                            charge_r = min(p_dispo, (cap_utile_sim - (s_temp_sim_sol + s_temp_sim_res)) / RENDEMENT_CHARGE)
-                                            s_temp_sim_res += charge_r * RENDEMENT_CHARGE
-                                            gain_annuel_brut -= charge_r * prix_h
+                                seuil_charge = prix_moyen * 0.8
+                                if prix_h < seuil_charge and s_temp_sim < cap_utile_sim:
+                                    charge_res = min(p_batt_max_sim, (cap_utile_sim - s_temp_sim) / RENDEMENT_CHARGE)
+                                    s_temp_sim += charge_res * RENDEMENT_CHARGE
+                                    gain_annuel_brut -= charge_res * prix_h
                     else:
                         tarif_hp = prix_achat_val
-                        if autoriser_arbitrage_val or autoriser_prix_dynamiques_val:
-                            # Gain arbitrage basé sur le coût évité ou le différentiel
-                            economie_arbitrage = total_charge_reseau * (tarif_hp - (sum(vecteur_prix_achat)/8760))
-                            gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (surplus_test * prix_vente_val) + economie_arbitrage
+                        if autoriser_arbitrage_val:
+                            economie_arbitrage = total_charge_reseau * (tarif_hp - prix_hc_val)
+                            gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (surplus_test * prix_vente_val) + economie_arbitrage - (total_charge_reseau * prix_hc_val)
                         else:
                             gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (surplus_test * prix_vente_val)
                     
@@ -1788,41 +1664,13 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                 profil_net.append(net)
                         
                         if st.session_state.get("pays_selectionne") == "France":
-                            # En France, on calcule deux types de gains :
-                            # 1. Gain avec l'abonnement ACTUEL (réduction des dépassements)
-                            nb_h_dep_init = sum(1 for c_i in courbe_conso_val_calc if c_i > abonnement_val_val + 0.01)
-                            nb_h_dep_final_actuel = sum(1 for p_n in profil_net if p_n > abonnement_val_val + 0.01)
-                            gain_ecretage_actuel = max(0, nb_h_dep_init - nb_h_dep_final_actuel) * taxe_puissance_annuelle_val
+                            # En France, l'écrêtage dépend du seuil d'abonnement (abonnement_val_val)
+                            # On compte les heures où le profil initial dépassait et le profil net ne dépasse plus
+                            nb_heures_depassement_initial = sum(1 for c_initial in courbe_conso_val_calc if c_initial > abonnement_val_val + 0.01)
+                            nb_heures_depassement_final = sum(1 for p_net in profil_net if p_net > abonnement_val_val + 0.01)
                             
-                            # 2. Gain avec l'abonnement OPTIMAL
-                            best_gain_local = -float('inf')
-                            best_abo_local = abonnement_val_val
-                            depassements = [p_n for p_n in profil_net if p_n > 0.01]
-                            
-                            # Liste des paliers à tester
-                            paliers = {3.0, abonnement_val_val}
-                            if offre_france_val == "Tarif bleu particulier":
-                                paliers.update([6, 9, 12, 15, 18, 24, 30, 36])
-                            elif offre_france_val == "Tarif bleu pro":
-                                paliers.update([3, 6, 9, 12, 15, 18, 24, 30, 36])
-                            
-                            if depassements:
-                                for p in sorted(depassements, reverse=True)[:50]:
-                                    val = math.ceil(p)
-                                    if 3 <= val <= abonnement_val_val:
-                                        paliers.add(float(val))
-                            
-                            for abo_t in paliers:
-                                if abo_t > abonnement_val_val: continue
-                                g_fixe = (abonnement_val_val - abo_t) * cout_abonnement_kva_val
-                                nb_h_d = sum(1 for p_n in profil_net if p_n > abo_t + 0.01)
-                                c_dep = nb_h_d * taxe_puissance_annuelle_val
-                                if (g_fixe - c_dep) > best_gain_local:
-                                    best_gain_local = g_fixe - c_dep
-                                    best_abo_local = abo_t
-                            
-                            # On retient le meilleur des deux pour le ROI de l'optimiseur
-                            revenu_ecretage = max(gain_ecretage_actuel, best_gain_local)
+                            # L'économie est le nombre d'heures de dépassement évitées
+                            revenu_ecretage = max(0, nb_heures_depassement_initial - nb_heures_depassement_final) * taxe_puissance_annuelle_val
                         else:
                             # Suisse : Économie sur la taxe de puissance mensuelle
                             gain_ecretage_total = 0
@@ -1935,115 +1783,28 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                 p_batt_real_max = 0
                                 total_charge_reseau = 0
                                 
-                                # Pour suivre l'origine de l'énergie dans la batterie (Solaire vs Réseau)
-                                stock_solaire = 0.0 # Énergie stockée issue du PV (kWh)
-                                stock_reseau = 0.0  # Énergie stockée issue du réseau (kWh)
-                                
-                                # Seuil pour l'arbitrage dynamique
-                                if autoriser_prix_dynamiques_val:
-                                    prix_moyen = sum(vecteur_prix_achat) / 8760
-                                    seuil_charge = prix_moyen * 0.8
-                                
-                                # --- MODIFICATION : On ignore l'arbitrage/écrêtage/services pour l'optimisation du système idéal ---
-                                # On force ces flags à False localement pour la boucle de recherche SI l'option n'est pas activée
-                                if optimiser_avec_options_val:
-                                    local_autoriser_arbitrage = autoriser_arbitrage_val
-                                    local_autoriser_prix_dynamiques = autoriser_prix_dynamiques_val
-                                    local_autoriser_ecretage = autoriser_ecretage_val
-                                    local_autoriser_services = autoriser_services_val
-                                else:
-                                    local_autoriser_arbitrage = False
-                                    local_autoriser_prix_dynamiques = False
-                                    local_autoriser_ecretage = False
-                                    local_autoriser_services = False
-
-                                # Seuil pour l'arbitrage dynamique
-                                if autoriser_prix_dynamiques_val:
-                                    prix_moyen = sum(vecteur_prix_achat) / 8760
-                                    seuil_charge = prix_moyen * 0.8
-                                
-                                # Calcul du surplus solaire attendu pour chaque jour
-                                surplus_journalier_attendu_o = []
-                                for j in range(365):
-                                    s_jour = 0
-                                    for h in range(24):
-                                        idx = j*24 + h
-                                        s_jour += max(0, prod_h_test[idx] - courbe_conso_val_calc[idx])
-                                    surplus_journalier_attendu_o.append(s_jour)
-
+                                # --- SIMULATION DÉCISIONNELLE (SOLAIRE PUR UNIQUEMENT) ---
+                                # On n'applique pas l'optimisation d'écrêtage ici pour garder un dimensionnement robuste
                                 for h_idx, (ph, ch) in enumerate(zip(prod_h_test, courbe_conso_val_calc)):
-                                    h_jour = h_idx % 24
-                                    j_idx = h_idx // 24
-                                    prix_h = vecteur_prix_achat[h_idx]
-                                    
-                                    # Détermination si prix bas pour arbitrage Spot
-                                    est_prix_bas = False
-                                    if (local_autoriser_arbitrage or local_autoriser_prix_dynamiques):
-                                        # Seuil de rentabilité : le prix doit être inférieur à 80% du prix moyen 
-                                        est_prix_bas = prix_h < (seuil_charge)
-                                        
-                                    # Anticipation solaire STRICTE
-                                    if est_prix_bas and 0 <= h_jour <= 6:
-                                        surplus_prevu = surplus_journalier_attendu_o[j_idx]
-                                        place_pour_reseau = max(0, cap_utile_b - surplus_prevu)
-                                        if (stock_solaire + stock_reseau) >= place_pour_reseau:
-                                            est_prix_bas = False
-
-                                    # --- PRIORITÉ 1 : LE SOLAIRE ---
-                                    charge_sol = 0
-                                    dech_sol = 0
                                     if ph >= ch:
-                                        # Consommation directe du solaire
                                         auto_temp_kwh += ch
-                                        dispo_solaire = ph - ch
-                                    
-                                        # Charger la batterie avec le surplus solaire
-                                        charge_sol = min(dispo_solaire, (cap_utile_b - (stock_solaire + stock_reseau)) / RENDEMENT_CHARGE, p_batt_max_test)
-                                        stock_solaire += charge_sol * RENDEMENT_CHARGE
-                                        p_batt_real_max = max(p_batt_real_max, charge_sol)
-                                        p_max_net = max(p_max_net, 0)
+                                        dispo = ph - ch
+                                        charge = min(dispo, (cap_utile_b - s_temp) / RENDEMENT_CHARGE, p_batt_max_test)
+                                        s_temp += charge * RENDEMENT_CHARGE
+                                        p_batt_real_max = max(p_batt_real_max, charge)
+                                        soc_points.append(s_temp)
                                     else:
-                                        # Solaire insuffisant
                                         auto_temp_kwh += ph
                                         besoin = ch - ph
-                                    
-                                        # Décharger la batterie pour couvrir le besoin
-                                        total_stock = stock_solaire + stock_reseau
-                                        
-                                        # --- LOGIQUE DE LISSAGE (PEAK SHAVING INTELLIGENT) ---
-                                        if local_autoriser_ecretage:
-                                            # --- LOGIQUE DE LISSAGE (50% Batterie / 50% Réseau) ---
-                                            # Nouveau : On couvre 50% du besoin peu importe le seuil
-                                            besoin_a_couvrir = besoin * 0.5
-                                            decharge_totale = min(besoin_a_couvrir / RENDEMENT_DECHARGE, total_stock, p_batt_max_test)
-                                        else:
-                                            decharge_totale = min(besoin / RENDEMENT_DECHARGE, total_stock, p_batt_max_test)
-                                        
-                                        if total_stock > 0:
-                                            ratio_sol = stock_solaire / total_stock
-                                            ratio_res = stock_reseau / total_stock
-                                            stock_solaire -= decharge_totale * ratio_sol
-                                            stock_reseau -= decharge_totale * ratio_res
-                                        
-                                        p_batt_real_max = max(p_batt_real_max, decharge_totale)
-                                        auto_temp_kwh += decharge_totale * RENDEMENT_DECHARGE
-                                        total_decharge_sim += decharge_totale * RENDEMENT_DECHARGE
-                                        p_max_net = max(p_max_net, besoin - decharge_totale * RENDEMENT_DECHARGE)
-                                        dech_sol = decharge_totale
-
-                                    # --- PRIORITÉ 2 : L'ARBITRAGE RÉSEAU ---
-                                    if (local_autoriser_arbitrage or local_autoriser_prix_dynamiques) and est_prix_bas and (stock_solaire + stock_reseau) < cap_utile_b:
-                                        p_dispo_batt = p_batt_max_test - (charge_sol if ph >= ch else dech_sol)
-                                        if p_dispo_batt > 0:
-                                            charge_res = min(p_dispo_batt, (cap_utile_b - (stock_solaire + stock_reseau)) / RENDEMENT_CHARGE)
-                                            stock_reseau += charge_res * RENDEMENT_CHARGE
-                                            total_charge_reseau += charge_res
-                                            p_batt_real_max = max(p_batt_real_max, (charge_res + charge_sol) if ph >= ch else (charge_res + dech_sol))
-
-                                    soc_points.append(stock_solaire + stock_reseau)
-
+                                        decharge = min(besoin / RENDEMENT_DECHARGE, s_temp, p_batt_max_test)
+                                        s_temp -= decharge
+                                        p_batt_real_max = max(p_batt_real_max, decharge)
+                                        auto_temp_kwh += decharge * RENDEMENT_DECHARGE
+                                        total_decharge_sim += decharge * RENDEMENT_DECHARGE
+                                        soc_points.append(s_temp)
+                                
                                 cyclage_annuel = total_decharge_sim / cap_b if cap_b > 0 else 0
-                                remplissage_moyen = (sum(soc_points) / len(soc_points)) / cap_b * 100 if (cap_b > 0 and len(soc_points) > 0) else 0
+                                remplissage_moyen = (sum(soc_points) / len(soc_points)) / cap_b * 100 if cap_b > 0 else 0
                                 ratio_puissance = (p_batt_real_max / p_batt_max_test * 100) if p_batt_max_test > 0 else 0
 
                                 prod_annuelle_test = sum(prod_h_test)
@@ -2051,166 +1812,18 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                 t_auto = (auto_temp_kwh / prod_annuelle_test * 100) if prod_annuelle_test > 0 else 0
                                 surplus_test = max(0, prod_annuelle_test - auto_temp_kwh)
                                 
+                                # Valorisation financière BASE (Solaire Pur)
                                 if "location" in scénario_investissement_val:
                                     tarif_hp = prix_revente_locataire_val
                                     gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (surplus_test * prix_vente_val)
-                                elif local_autoriser_prix_dynamiques:
-                                    gain_annuel_brut = (surplus_test * prix_vente_val)
-                                    s_temp_sim_sol = 0.0
-                                    s_temp_sim_res = 0.0
-                                    cap_utile_sim = cap_b * DOD
-                                    p_batt_max_sim = cap_b * C_RATE
-                                    
-                                    # Surplus journalier attendu pour l'anticipation
-                                    surplus_journalier_sim = []
-                                    for j in range(365):
-                                        s_j = 0
-                                        for h in range(24):
-                                            idx_j = j*24 + h
-                                            s_j += max(0, prod_h_test[idx_j] - courbe_conso_val_calc[idx_j])
-                                        surplus_journalier_sim.append(s_j)
-                                    
-                                    for h_idx, (ph, ch) in enumerate(zip(prod_h_test, courbe_conso_val_calc)):
-                                        prix_h = vecteur_prix_achat[h_idx]
-                                        h_j = h_idx % 24
-                                        j_j = h_idx // 24
-                                        
-                                        # PRIORITÉ 1 : SOLAIRE
-                                        charge_s = 0
-                                        dech_s = 0
-                                        if ph >= ch:
-                                            gain_annuel_brut += ch * prix_h
-                                            dispo = ph - ch
-                                            charge_s = min(dispo, (cap_utile_sim - (s_temp_sim_sol + s_temp_sim_res)) / RENDEMENT_CHARGE, p_batt_max_sim)
-                                            s_temp_sim_sol += charge_s * RENDEMENT_CHARGE
-                                        else:
-                                            auto_h = ph
-                                            besoin = ch - ph
-                                            total_s_sim = s_temp_sim_sol + s_temp_sim_res
-                                            decharge_t = min(besoin / RENDEMENT_DECHARGE, total_s_sim, p_batt_max_sim)
-                                            if total_s_sim > 0:
-                                                r_sol = s_temp_sim_sol / total_s_sim
-                                                r_res = s_temp_sim_res / total_s_sim
-                                                s_temp_sim_sol -= decharge_t * r_sol
-                                                s_temp_sim_res -= decharge_t * r_res
-                                            dech_s = decharge_t
-                                            auto_h += decharge_t * RENDEMENT_DECHARGE
-                                            gain_annuel_brut += auto_h * prix_h
-
-                                        # PRIORITÉ 2 : ARBITRAGE
-                                        if (local_autoriser_arbitrage or local_autoriser_prix_dynamiques):
-                                            prix_moyen = sum(vecteur_prix_achat) / 8760
-                                            if prix_h < (prix_moyen * 0.8):
-                                                est_prix_bas_sim = True
-                                                if 0 <= h_j <= 6:
-                                                    place_r = max(0, cap_utile_sim - surplus_journalier_sim[j_j])
-                                                    if (s_temp_sim_sol + s_temp_sim_res) >= place_r:
-                                                        est_prix_bas_sim = False
-                                                
-                                                if est_prix_bas_sim:
-                                                    p_dispo = p_batt_max_sim - (charge_s if ph >= ch else dech_s)
-                                                    if p_dispo > 0:
-                                                        charge_r = min(p_dispo, (cap_utile_sim - (s_temp_sim_sol + s_temp_sim_res)) / RENDEMENT_CHARGE)
-                                                        s_temp_sim_res += charge_r * RENDEMENT_CHARGE
-                                                        gain_annuel_brut -= charge_r * prix_h
                                 else:
-                                   tarif_hp = prix_achat_val
-                                   if local_autoriser_arbitrage or local_autoriser_prix_dynamiques:
-                                       economie_arbitrage = total_charge_reseau * (tarif_hp - (sum(vecteur_prix_achat)/8760))
-                                       gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (surplus_test * prix_vente_val) + economie_arbitrage
-                                   else:
-                                       gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (surplus_test * prix_vente_val)
+                                    tarif_hp = prix_achat_val
+                                    gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (surplus_test * prix_vente_val)
                                 
-                                # Revenus additionnels batterie (Peak Shaving et Services Systèmes)
-                                revenu_ecretage = 0
-                                if local_autoriser_ecretage and cap_b > 0:
-                                    # Calcul mensuel de la réduction de puissance max
-                                    gain_ecretage_total = 0
-                                    jours_par_mois_calc = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                                    
-                                    # On simule le profil net heure par heure pour toute l'année
-                                    profil_net = []
-                                    s_temp_sim = 0.0
-                                    cap_utile_sim = cap_b * DOD
-                                    p_batt_max_sim = cap_b * C_RATE
-                                    for ph, ch in zip(prod_h_test, courbe_conso_val_calc):
-                                        if ph >= ch:
-                                            dispo = ph - ch
-                                            charge = min(dispo, (cap_utile_sim - s_temp_sim) / RENDEMENT_CHARGE, p_batt_max_sim)
-                                            s_temp_sim += charge * RENDEMENT_CHARGE
-                                            profil_net.append(0)
-                                        else:
-                                            besoin = ch - ph
-                                            decharge = min(besoin / RENDEMENT_DECHARGE, s_temp_sim, p_batt_max_sim)
-                                            s_temp_sim -= decharge
-                                            net = besoin - decharge * RENDEMENT_DECHARGE
-                                            profil_net.append(net)
-                                    
-                                    idx_h = 0
-                                    for m in range(12):
-                                        heures_mois = jours_par_mois_calc[m] * 24
-                                        # Max mensuel initial
-                                        p_max_mensuel_initial = max(courbe_conso_val_calc[idx_h : idx_h + heures_mois]) if courbe_conso_val_calc[idx_h : idx_h + heures_mois] else 0
-                                        # Max mensuel net
-                                        p_max_mensuel_net = max(profil_net[idx_h : idx_h + heures_mois]) if profil_net[idx_h : idx_h + heures_mois] else 0
-                                        
-                                        if st.session_state.get("pays_selectionne") == "France":
-                                            # En France, on calcule deux types de gains :
-                                            # 1. Gain avec l'abonnement ACTUEL (réduction des dépassements)
-                                            nb_h_dep_init = sum(1 for c_i in courbe_conso_val_calc if c_i > abonnement_val_val + 0.01)
-                                            nb_h_dep_final_actuel = sum(1 for p_n in profil_net if p_n > abonnement_val_val + 0.01)
-                                            gain_ecretage_actuel = max(0, nb_h_dep_init - nb_h_dep_final_actuel) * taxe_puissance_annuelle_val
-                                            
-                                            # 2. Gain avec l'abonnement OPTIMAL
-                                            best_gain_local = -float('inf')
-                                            best_abo_local = abonnement_val_val
-                                            depassements = [p_n for p_n in profil_net if p_n > 0.01]
-                                            
-                                            # Liste des paliers à tester
-                                            paliers = {3.0, abonnement_val_val}
-                                            if offre_france_val == "Tarif bleu particulier":
-                                                paliers.update([6, 9, 12, 15, 18, 24, 30, 36])
-                                            elif offre_france_val == "Tarif bleu pro":
-                                                paliers.update([3, 6, 9, 12, 15, 18, 24, 30, 36])
-                                            
-                                            if depassements:
-                                                for p in sorted(depassements, reverse=True)[:50]:
-                                                    val = math.ceil(p)
-                                                    if 3 <= val <= abonnement_val_val:
-                                                        paliers.add(float(val))
-                                            
-                                            for abo_t in paliers:
-                                                if abo_t > abonnement_val_val: continue
-                                                g_fixe = (abonnement_val_val - abo_t) * cout_abonnement_kva_val
-                                                nb_h_d = sum(1 for p_n in profil_net if p_n > abo_t + 0.01)
-                                                c_dep = nb_h_d * taxe_puissance_annuelle_val
-                                                if (g_fixe - c_dep) > best_gain_local:
-                                                    best_gain_local = g_fixe - c_dep
-                                                    best_abo_local = abo_t
-                                            
-                                            # On retient le meilleur des deux pour le ROI de l'optimiseur
-                                            revenu_ecretage = max(gain_ecretage_actuel, best_gain_local)
-                                            # Stockage pour affichage final
-                                            if p_test == best_pv_total and cap_b == best_capa_batt:
-                                                gain_ecretage_actuel_final = gain_ecretage_actuel
-                                                gain_ecretage_optimal_final = best_gain_local
-                                                best_abo_optimal_final = best_abo_local
-                                        else:
-                                            # Suisse : réduction du pic mensuel réel
-                                            reduction = max(0, p_max_mensuel_initial - p_max_mensuel_net)
-                                            gain_ecretage_total += reduction * taxe_puissance_annuelle_val
-                                        idx_h += heures_mois
-                                    revenu_ecretage = gain_ecretage_total
-
-                                revenu_services = (cap_b / 1000) * revenu_services_unit_val if local_autoriser_services and cap_b > 0 else 0
-                                gain_annuel_brut += revenu_ecretage + revenu_services
-
                                 opex_annuel = (p_test * opex_pv_unit_val) + (cap_b * opex_batt_unit_val)
                                 gain_annuel_net = gain_annuel_brut - opex_annuel
                                 capex_test = (p_test * capex_pv_unit_val) + (cap_b * capex_batt_unit_val)
-                                
-                                gain_cumule = gain_annuel_net * duree_projet_val
-                                van_test = gain_cumule - capex_test
+                                van_test = (gain_annuel_net * duree_projet_val) - capex_test
                                 roi_test = capex_test / gain_annuel_net if gain_annuel_net > 0 else 99
                                 
                                 scenarios_comparaison.append({
@@ -2266,248 +1879,172 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                                     best_autoprod_score = score
                                     best_pv_total = p_test
                                     best_capa_batt = cap_b
-                                    # --- MODIFICATION : On recalculera les performances finales APRÈS avoir trouvé le système idéal ---
-                                    # Pour inclure les options facultatives (arbitrage, etc.) sans qu'elles n'influencent le choix.
-                        
-                        # --- RECALCUL DES PERFORMANCES DU SYSTÈME IDÉAL AVEC LES OPTIONS FACULTATIVES ---
-                        # Maintenant qu'on a le best_pv_total et best_capa_batt, on relance une simulation complète
-                        # avec les vrais flags utilisateur (autoriser_arbitrage_val, etc.)
-                        
-                        ratio_pv_ideal = best_pv_total / p_totale_max_toit if p_totale_max_toit > 0 else 0
-                        prod_h_ideal = [0.0] * 8760
-                        for item in profils_unitaires_par_pan:
-                            p_pan_ideal = item['p_max'] * ratio_pv_ideal
-                            for i in range(8760):
-                                prod_h_ideal[i] += item['profil'][i] * p_pan_ideal
-                        
-                        s_temp = 0.0
-                        auto_temp_kwh = 0
-                        cap_utile_b = best_capa_batt * DOD
-                        p_batt_max_test = best_capa_batt * C_RATE
-                        soc_points = []
-                        total_decharge_sim = 0
-                        p_batt_real_max = 0
-                        total_charge_reseau = 0
-                        
-                        # Suivi des gains détaillés
-                        gain_autoconsommation = 0
-                        gain_vente_surplus = 0
-                        gain_arbitrage = 0
-                        
-                        # Pour suivre l'origine de l'énergie dans la batterie (Solaire vs Réseau)
-                        stock_solaire = 0.0 # Énergie stockée issue du PV (kWh)
-                        stock_reseau = 0.0  # Énergie stockée issue du réseau (kWh)
-                        
-                        # Calcul du surplus solaire attendu pour chaque jour (pour l'anticipation)
-                        surplus_journalier_attendu = []
-                        for j in range(365):
-                            s_jour = 0
-                            for h in range(24):
-                                idx = j*24 + h
-                                s_jour += max(0, prod_h_ideal[idx] - courbe_conso_val_calc[idx])
-                            surplus_journalier_attendu.append(s_jour)
-                        
-                        # Seuil pour l'arbitrage dynamique
-                        if autoriser_prix_dynamiques_val:
-                            prix_moyen = sum(vecteur_prix_achat) / 8760
-                            seuil_charge = prix_moyen * 0.8
-                        
-                        for h_idx, (ph, ch) in enumerate(zip(prod_h_ideal, courbe_conso_val_calc)):
-                            h_jour = h_idx % 24
-                            j_idx = h_idx // 24
-                            prix_h = vecteur_prix_achat[h_idx]
-                            
-                            est_prix_bas = False
-                            if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val):
-                                est_prix_bas = prix_h < (seuil_charge)
-                                
-                                # Anticipation solaire STRICTE
-                                if est_prix_bas and 0 <= h_jour <= 6:
-                                    surplus_prevu = surplus_journalier_attendu[j_idx]
-                                    place_pour_reseau = max(0, cap_utile_b - surplus_prevu)
-                                    if (stock_solaire + stock_reseau) >= place_pour_reseau:
-                                        est_prix_bas = False
+                                    # Les KPI finaux seront recalculés après la boucle avec les options avancées
+                                    best_taux_auto_config = t_auto
+                                    best_taux_prod_config = t_prod
+                                    best_surplus_config = surplus_test
 
-                            # --- PRIORITÉ 1 : LE SOLAIRE ---
-                            charge_sol = 0
-                            dech_sol = 0
-                            if ph >= ch:
-                                # Consommation directe
-                                auto_temp_kwh += ch
-                                if "location" in scénario_investissement_val:
-                                    gain_autoconsommation += ch * prix_revente_locataire_val
-                                else:
-                                    gain_autoconsommation += ch * prix_h
-                                
-                                dispo_solaire = ph - ch
-                                # Charge batterie solaire
-                                charge_sol = min(dispo_solaire, (cap_utile_b - (stock_solaire + stock_reseau)) / RENDEMENT_CHARGE, p_batt_max_test)
-                                stock_solaire += charge_sol * RENDEMENT_CHARGE
-                                p_batt_real_max = max(p_batt_real_max, charge_sol)
+                        # --- SIMULATION FINALE DU SYSTÈME IDÉAL (AVEC OPTIONS AVANCÉES) ---
+                        if best_pv_total > 0:
+                            ratio_pv_ideal = best_pv_total / p_totale_max_toit if p_totale_max_toit > 0 else 0
+                            prod_h_ideal = [0.0] * 8760
+                            for item in profils_unitaires_par_pan:
+                                p_pan_ideal = item['p_max'] * ratio_pv_ideal
+                                for i in range(8760):
+                                    prod_h_ideal[i] += item['profil'][i] * p_pan_ideal
                             
-                                # Surplus vendu
-                                surplus_h = dispo_solaire - charge_sol
-                                gain_vente_surplus += surplus_h * prix_vente_val
-                            else:
-                                # Solaire insuffisant
-                                auto_temp_kwh += ph
-                                if "location" in scénario_investissement_val:
-                                    gain_autoconsommation += ph * prix_revente_locataire_val
-                                else:
-                                    gain_autoconsommation += ph * prix_h
-                                
-                                besoin = ch - ph
-                                
-                                # Décharge batterie
-                                total_stock = stock_solaire + stock_reseau
-                                
-                                # --- LOGIQUE DE LISSAGE (PEAK SHAVING INTELLIGENT) ---
-                                if autoriser_ecretage_val:
-                                    # --- LOGIQUE DE LISSAGE (50% Batterie / 50% Réseau) ---
-                                    # Nouveau : On couvre 50% du besoin peu importe le seuil
-                                    besoin_a_couvrir = besoin * 0.5
-                                    decharge_totale = min(besoin_a_couvrir / RENDEMENT_DECHARGE, total_stock, p_batt_max_test)
-                                else:
-                                    decharge_totale = min(besoin / RENDEMENT_DECHARGE, total_stock, p_batt_max_test)
-                                
-                                # Proportion de décharge selon l'origine du stock
-                                if total_stock > 0:
-                                    ratio_sol = stock_solaire / total_stock
-                                    ratio_res = stock_reseau / total_stock
-                                
-                                    dech_sol_val = decharge_totale * ratio_sol
-                                    dech_res_val = decharge_totale * ratio_res
-                                
-                                    stock_solaire -= dech_sol_val
-                                    stock_reseau -= dech_res_val
-                                
-                                    # Valorisation
-                                    if "location" in scénario_investissement_val:
-                                        gain_autoconsommation += dech_sol_val * RENDEMENT_DECHARGE * prix_revente_locataire_val
-                                        gain_arbitrage += dech_res_val * RENDEMENT_DECHARGE * prix_revente_locataire_val
-                                    else:
-                                        gain_autoconsommation += dech_sol_val * RENDEMENT_DECHARGE * prix_h
-                                        gain_arbitrage += dech_res_val * RENDEMENT_DECHARGE * prix_h
+                            cap_utile_ideal = best_capa_batt * DOD
+                            s_temp = 0.0
+                            auto_temp_kwh = 0
+                            p_batt_max_ideal = best_capa_batt * C_RATE
+                            total_decharge_sim = 0
+                            total_charge_reseau = 0
                             
-                                p_batt_real_max = max(p_batt_real_max, decharge_totale)
-                                auto_temp_kwh += decharge_totale * RENDEMENT_DECHARGE
-                                total_decharge_sim += decharge_totale * RENDEMENT_DECHARGE
-                                dech_sol = decharge_totale
-
-                            # --- PRIORITÉ 2 : L'ARBITRAGE RÉSEAU ---
-                            if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val) and est_prix_bas and (stock_solaire + stock_reseau) < cap_utile_b:
-                                p_dispo_batt = p_batt_max_test - (charge_sol if ph >= ch else dech_sol)
-                                if p_dispo_batt > 0:
-                                    charge_res = min(p_dispo_batt, (cap_utile_b - (stock_solaire + stock_reseau)) / RENDEMENT_CHARGE)
-                                    stock_reseau += charge_res * RENDEMENT_CHARGE
-                                    total_charge_reseau += charge_res
-                                    gain_arbitrage -= charge_res * prix_h
-                                    p_batt_real_max = max(p_batt_real_max, (charge_res + charge_sol) if ph >= ch else (charge_res + dech_sol))
-                        
-                            soc_points.append(stock_solaire + stock_reseau)
-                        
-                        best_taux_prod_config = (auto_temp_kwh / conso_annuelle_kwh_val * 100) if conso_annuelle_kwh_val > 0 else 0
-                        best_taux_auto_config = (auto_temp_kwh / sum(prod_h_ideal) * 100) if sum(prod_h_ideal) > 0 else 0
-                        best_surplus_config = max(0, sum(prod_h_ideal) - auto_temp_kwh)
-                        
-                        # Revenus additionnels batterie (Peak Shaving et Services Systèmes)
-                        revenu_ecretage = 0
-                        if autoriser_ecretage_val and best_capa_batt > 0:
+                            # Seuil pour l'arbitrage dynamique
+                            if autoriser_prix_dynamiques_val:
+                                prix_moyen = sum(vecteur_prix_achat) / 8760
+                                seuil_charge = prix_moyen * 0.8
+                            
                             profil_net = []
-                            s_temp_sim = 0.0
-                            for ph, ch in zip(prod_h_ideal, courbe_conso_val_calc):
+                            for h_idx, (ph, ch) in enumerate(zip(prod_h_ideal, courbe_conso_val_calc)):
+                                h_jour = h_idx % 24
+                                prix_h = vecteur_prix_achat[h_idx]
+                                
+                                est_hc = False
+                                if autoriser_prix_dynamiques_val:
+                                    est_hc = prix_h < seuil_charge
+                                elif hc_start_val < hc_end_val:
+                                    est_hc = hc_start_val <= h_jour < hc_end_val
+                                else:
+                                    est_hc = h_jour >= hc_start_val or h_jour < hc_end_val
+
                                 if ph >= ch:
+                                    auto_temp_kwh += ch
                                     dispo = ph - ch
-                                    charge = min(dispo, (cap_utile_b - s_temp_sim) / RENDEMENT_CHARGE, p_batt_max_test)
-                                    s_temp_sim += charge * RENDEMENT_CHARGE
+                                    charge = min(dispo, (cap_utile_ideal - s_temp) / RENDEMENT_CHARGE, p_batt_max_ideal)
+                                    s_temp += charge * RENDEMENT_CHARGE
                                     profil_net.append(0)
                                 else:
+                                    auto_temp_kwh += ph
                                     besoin = ch - ph
-                                    decharge = min(besoin / RENDEMENT_DECHARGE, s_temp_sim, p_batt_max_test)
-                                    s_temp_sim -= decharge
-                                    profil_net.append(besoin - decharge * RENDEMENT_DECHARGE)
+                                    
+                                    # Logique d'optimisation d'écrêtage (Peak Shaving) :
+                                    # Au lieu de décharger tout le besoin, on ne décharge que 50% pour lisser l'appel réseau
+                                    besoin_a_couvrir = besoin
+                                    if autoriser_ecretage_val:
+                                        besoin_a_couvrir = besoin * 0.5
+                                        
+                                    decharge = min(besoin_a_couvrir / RENDEMENT_DECHARGE, s_temp, p_batt_max_ideal)
+                                    s_temp -= decharge
+                                    auto_temp_kwh += decharge * RENDEMENT_DECHARGE
+                                    total_decharge_sim += decharge * RENDEMENT_DECHARGE
+                                    
+                                    # Arbitrage HC (ou prix bas)
+                                    if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val) and est_hc and s_temp < cap_utile_ideal:
+                                        charge_res = min(p_batt_max_ideal, (cap_utile_ideal - s_temp) / RENDEMENT_CHARGE)
+                                        s_temp += charge_res * RENDEMENT_CHARGE
+                                        total_charge_reseau += charge_res
+                                    
+                                    profil_net.append(max(0, besoin - decharge * RENDEMENT_DECHARGE))
                             
-                            idx_h = 0
-                            jours_m = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                            gain_ecretage_total = 0 
-                            for m in range(12):
-                                hs = jours_m[m] * 24
-                                if st.session_state.get("pays_selectionne") == "France":
-                                    # --- VERSION FRANCE : OPTIMISATION AUTOMATIQUE ---
-                                    # 1. Gain sur l'abonnement actuel (Dépassements évités)
-                                    seuil_initial = abonnement_val_val
-                                    nb_h_dep_init_mensuel = sum(1 for c_i in courbe_conso_val_calc[idx_h : idx_h + hs] if c_i > abonnement_val_val + 0.01)
-                                    nb_h_dep_final_actuel_mensuel = sum(1 for p_n in profil_net[idx_h : idx_h + hs] if p_n > seuil_initial + 0.01)
-                                    gain_ecretage_actuel = max(0, nb_h_dep_init_mensuel - nb_h_dep_final_actuel_mensuel) * taxe_puissance_annuelle_val
-                                    
-                                    # 2. Recherche du meilleur abonnement possible (Gain optimal)
-                                    best_gain_local = -999999999
-                                    best_abo_local = abonnement_val_val
-                                    depassements = [p_n for p_n in profil_net if p_n > 0.01]
-                                    
-                                    # Paliers standards
-                                    paliers = {3.0, abonnement_val_val}
-                                    if 'offre_france_val' in locals() and offre_france_val == "Tarif bleu particulier":
-                                        paliers.update([6, 9, 12, 15, 18, 24, 30, 36])
-                                    elif 'offre_france_val' in locals() and offre_france_val == "Tarif bleu pro":
-                                        paliers.update([3, 6, 9, 12, 15, 18, 24, 30, 36])
-
-                                    if depassements:
-                                        for p in sorted(depassements, reverse=True)[:50]:
-                                            val = math.ceil(p)
-                                            if 3 <= val <= abonnement_val_val:
-                                                paliers.add(float(val))
-                                    
-                                    for abo_t in paliers:
-                                        if abo_t > abonnement_val_val: continue
-                                        g_fixe = (abonnement_val_val - abo_t) * cout_abonnement_kva_val
-                                        nb_h_d_local = sum(1 for p_n in profil_net[idx_h : idx_h + hs] if p_n > abo_t + 0.01)
-                                        c_dep_local = nb_h_d_local * taxe_puissance_annuelle_val
-                                        if (g_fixe/12 - c_dep_local) > best_gain_local:
-                                            best_gain_local = g_fixe/12 - c_dep_local
-                                            best_abo_local = abo_t
-                                    
-                                    gain_ecretage_optimal = best_gain_local
-                                    abo_optimal_local = best_abo_local
-                                    
-                                    # On retient le gain optimal pour la rentabilité globale (VAN)
-                                    gain_ecretage_total += gain_ecretage_optimal
-                                    
-                                    # Initialisation des accumulateurs pour l'affichage final
-                                    if m == 0:
-                                        total_gain_actuel = 0
-                                        total_gain_optimal = 0
-                                        meilleur_abo_final = abonnement_val_val
-                                    
-                                    total_gain_actuel += gain_ecretage_actuel
-                                    total_gain_optimal += gain_ecretage_optimal
-                                    meilleur_abo_final = min(meilleur_abo_final, abo_optimal_local)
-
-                                    # Pour compatibilité avec les variables d'affichage existantes
-                                    nouvel_abo_propose = meilleur_abo_final
-                                    gain_actuel_details = total_gain_actuel
-                                    gain_optimal_details = total_gain_optimal
-                                    
-                                    # Correction : revenu_ecretage doit être total_gain_optimal (annuel)
-                                    revenu_ecretage = total_gain_optimal
+                            prod_annuelle_ideal = sum(prod_h_ideal)
+                            best_taux_prod_config = (auto_temp_kwh / conso_annuelle_kwh_val * 100) if conso_annuelle_kwh_val > 0 else 0
+                            best_taux_auto_config = (auto_temp_kwh / prod_annuelle_ideal * 100) if prod_annuelle_ideal > 0 else 0
+                            best_surplus_config = max(0, prod_annuelle_ideal - auto_temp_kwh)
+                            
+                            # Valorisation financière réelle (Avec Options)
+                            if "location" in scénario_investissement_val:
+                                tarif_hp = prix_revente_locataire_val
+                                best_gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (best_surplus_config * prix_vente_val)
+                            elif autoriser_prix_dynamiques_val:
+                                # Gain = Somme des économies horaires
+                                best_gain_annuel_brut = (best_surplus_config * prix_vente_val)
+                                s_temp_sim = 0.0
+                                for h_idx, (ph, ch) in enumerate(zip(prod_h_ideal, courbe_conso_val_calc)):
+                                    prix_h = vecteur_prix_achat[h_idx]
+                                    if ph >= ch:
+                                        best_gain_annuel_brut += ch * prix_h
+                                        dispo = ph - ch
+                                        charge = min(dispo, (cap_utile_ideal - s_temp_sim) / RENDEMENT_CHARGE, p_batt_max_ideal)
+                                        s_temp_sim += charge * RENDEMENT_CHARGE
+                                    else:
+                                        besoin = ch - ph
+                                        
+                                        # Logique d'optimisation d'écrêtage (Peak Shaving) :
+                                        # Au lieu de décharger tout le besoin, on ne décharge que 50% pour lisser l'appel réseau
+                                        besoin_a_couvrir = besoin
+                                        if autoriser_ecretage_val:
+                                            besoin_a_couvrir = besoin * 0.5
+                                            
+                                        decharge = min(besoin_a_couvrir / RENDEMENT_DECHARGE, s_temp_sim, p_batt_max_ideal)
+                                        s_temp_sim -= decharge
+                                        best_gain_annuel_brut += (ph + decharge * RENDEMENT_DECHARGE) * prix_h
+                                        if prix_h < seuil_charge and s_temp_sim < cap_utile_ideal:
+                                            charge_res = min(p_batt_max_ideal, (cap_utile_ideal - s_temp_sim) / RENDEMENT_CHARGE)
+                                            s_temp_sim += charge_res * RENDEMENT_CHARGE
+                                            best_gain_annuel_brut -= charge_res * prix_h
+                            else:
+                                tarif_hp = prix_achat_val
+                                if autoriser_arbitrage_val:
+                                    economie_arbitrage = total_charge_reseau * (tarif_hp - prix_hc_val)
+                                    best_gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (best_surplus_config * prix_vente_val) + economie_arbitrage - (total_charge_reseau * prix_hc_val)
                                 else:
-                                    # Suisse : réduction du pic mensuel réel
-                                    p_init = max(courbe_conso_val_calc[idx_h:idx_h+hs])
-                                    p_net = max(profil_net[idx_h:idx_h+hs])
-                                    gain_ecretage_total += max(0, p_init - p_net) * taxe_puissance_annuelle_val
-                                    revenu_ecretage = gain_ecretage_total
-                                
-                                idx_h += hs
-                        
-                        revenu_services = (best_capa_batt / 1000) * revenu_services_unit_val if autoriser_services_val and best_capa_batt > 0 else 0
-                        
-                        best_gain_annuel = gain_autoconsommation + gain_vente_surplus + gain_arbitrage + revenu_ecretage + revenu_services - (best_pv_total * opex_pv_unit_val) - (best_capa_batt * opex_batt_unit_val)
-                        best_capex = (best_pv_total * capex_pv_unit_val) + (best_capa_batt * capex_batt_unit_val)
-                        best_economies = (best_gain_annuel * duree_projet_val) - best_capex
+                                    best_gain_annuel_brut = (auto_temp_kwh * tarif_hp) + (best_surplus_config * prix_vente_val)
+                            
+                            # Revenus additionnels batterie
+                            revenu_ecretage = 0
+                            nb_h_dep_init_total = 0
+                            nb_h_dep_final_total = 0
+                            p_max_init_annuel = 0
+                            p_max_net_annuel = 0
+
+                            if autoriser_ecretage_val and best_capa_batt > 0:
+                                gain_ecretage_total = 0
+                                jours_par_mois_calc = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                                idx_h = 0
+                                p_max_init_annuel = max(courbe_conso_val_calc)
+                                p_max_net_annuel = max(profil_net)
+
+                                for m in range(12):
+                                    heures_mois = jours_par_mois_calc[m] * 24
+                                    if st.session_state.get("pays_selectionne") == "France":
+                                        # Calcul du gain d'écrêtage pour la France (tarif dépassement horaire)
+                                        nb_h_dep_init = sum(1 for c_i in courbe_conso_val_calc[idx_h : idx_h + heures_mois] if c_i > abonnement_val_val + 0.01)
+                                        nb_h_dep_final = sum(1 for p_n in profil_net[idx_h : idx_h + heures_mois] if p_n > abonnement_val_val + 0.01)
+                                        nb_h_dep_init_total += nb_h_dep_init
+                                        nb_h_dep_final_total += nb_h_dep_final
+                                        gain_ecretage_total += max(0, nb_h_dep_init - nb_h_dep_final) * taxe_puissance_annuelle_val
+                                    else:
+                                        p_max_init = max(courbe_conso_val_calc[idx_h : idx_h + heures_mois]) if courbe_conso_val_calc[idx_h : idx_h + heures_mois] else 0
+                                        p_max_net = max(profil_net[idx_h : idx_h + heures_mois]) if profil_net[idx_h : idx_h + heures_mois] else 0
+                                        gain_ecretage_total += max(0, p_max_init - p_max_net) * taxe_puissance_annuelle_val
+                                    idx_h += heures_mois
+                                revenu_ecretage = gain_ecretage_total
+
+                            # Correction: on isole le gain réel supplémentaire dû à l'écrêtage et aux services
+                            revenu_services = (best_capa_batt / 1000) * revenu_services_unit_val if autoriser_services_val and best_capa_batt > 0 else 0
+                            best_gain_annuel_brut += revenu_ecretage + revenu_services
+                            
+                            opex_annuel = (best_pv_total * opex_pv_unit_val) + (best_capa_batt * opex_batt_unit_val)
+                            best_gain_annuel = best_gain_annuel_brut - opex_annuel
+                            best_capex = (best_pv_total * capex_pv_unit_val) + (best_capa_batt * capex_batt_unit_val)
+                            best_economies = (best_gain_annuel * duree_projet_val) - best_capex
+                            
+                            # Mise à jour du système idéal dans scenarios_comparaison pour refléter les gains réels sur le graph
+                            label_ideal = f"{best_pv_total:,.1f} kWc / {int(best_capa_batt)} kWh".replace(",", " ")
+                            for entry in scenarios_comparaison:
+                                if entry["Label"] == label_ideal:
+                                    entry["ROI"] = round(best_capex / best_gain_annuel, 1) if best_gain_annuel > 0 else 99
+                                    entry["Economies"] = round(best_economies)
+                                    entry["Autoproduction"] = best_taux_prod_config
+                                    entry["Autoconsommation"] = best_taux_auto_config
             
             aug_intro_ideale = max(0.0, best_pv_total - puissance_intro_kw_val)
             
             # --- AFFICHAGE MÉTRIQUES IDÉALES ---
+            st.write("---")
+            st.header("💡 Votre système photovoltaïque et stockage idéal")
+            
             c_id1, c_id2, c_id3 = st.columns(3)
             c_id1.metric("Puissance PV Idéale", f"{best_pv_total:,.1f} kWc".replace(",", " "), help="Puissance PV optimisant le compromis entre autonomie et rentabilité.")
             # Calcul de la puissance du stockage
@@ -2564,83 +2101,137 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
             cr3.metric("Temps de retour (ROI)", f"{roi:,.1f} ans".replace(",", " "))
             cr4.metric(f"Économies (sur {duree_projet_val} ans)", f"{int(economies_totale):,} {devise_val}".replace(",", " "), help="Gain financier net total cumulé sur la durée de vie du projet, moins l'investissement initial.")
 
-                        # --- DÉCOMPOSITION DES REVENUS ---
-            with st.expander("📊 Détail des revenus annuels"):
-                col_rev1, col_rev2 = st.columns(2)
-                with col_rev1:
-                    st.write(f"**Économies Autoconsommation :** {int(gain_autoconsommation):,} {devise_val}".replace(",", " "))
-                    st.write(f"**Vente Surplus Solaire :** {int(gain_vente_surplus):,} {devise_val}".replace(",", " "))
-                    if autoriser_arbitrage_val or autoriser_prix_dynamiques_val or (offre_france_val == "Tarif bleu particulier"):
-                        st.write(f"**Gain Arbitrage / Différentiel HP-HC :** {int(gain_arbitrage):,} {devise_val}".replace(",", " "))
-                with col_rev2:
-                    if autoriser_ecretage_val:
-                        st.write("**Écrêtage de pointe :**")
-                        st.write(f"👉 Abonnement initial : {int(abonnement_val_val)} kVA")
-                        p_pointe_init = max(courbe_conso_val_calc) if courbe_conso_val_calc else 0
-                        st.write(f"👉 Puissance de pointe : {p_pointe_init:,.1f} kW".replace(",", " "))
-                        # Calcul des frais de dépassement initiaux
-                        frais_dep_init = 0
-                        if st.session_state.get("pays_selectionne") == "France":
-                            nb_h_dep_init = sum(1 for c_i in courbe_conso_val_calc if c_i > abonnement_val_val + 0.01)
-                            frais_dep_init = nb_h_dep_init * taxe_puissance_annuelle_val
-                        else: # Suisse
-                            # On simule le pic mensuel
-                            idx_h_s = 0
-                            jours_m_s = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                            for m_s in range(12):
-                                hs_s = jours_m_s[m_s] * 24
-                                p_init_s = max(courbe_conso_val_calc[idx_h_s:idx_h_s+hs_s])
-                                frais_dep_init += p_init_s * taxe_puissance_annuelle_val
-                                idx_h_s += hs_s
-                        st.write(f"👉 Frais liés au dépassement de pointe : {int(frais_dep_init):,} {devise_val}".replace(",", " "))
-                        
-                        st.write(f"👉 Nouvelle pointe moyenne (PV+Stockage) : {p_max_net:,.1f} kW".replace(",", " "))
-                        
-                        # Economies sur les frais de dépassement
-                        # gain_actuel_details contient l'économie sur les dépassements avec l'abo actuel
-                        # gain_ecretage contient le gain total retenu (optimal en France, pic mensuel en Suisse)
-                        if st.session_state.get("pays_selectionne") == "France":
-                            st.write(f"👉 Économies sur les frais de dépassement : {int(gain_actuel_details):,} {devise_val}/an".replace(",", " "))
-                            st.write(f"👉 **Nouvel abonnement optimal conseillé : {int(nouvel_abo_propose)} kVA**")
-                            # Petit rappel du gain total écrêtage (dépassements + gain sur part fixe)
-                            st.write(f"👉 Gain annuel total écrêtage : {int(revenu_ecretage):,} {devise_val}/an".replace(",", " "))
-                            
-                            st.write("---")
-                            # Comparaison des coûts annuels de puissance
-                            # Coût 1 : Abo actuel + Dépassements restants (après batterie)
-                            nb_h_dep_restants_actuel = (frais_dep_init - gain_actuel_details) / taxe_puissance_annuelle_val if taxe_puissance_annuelle_val > 0 else 0
-                            cout_annuel_actuel = (abonnement_val_val * cout_abonnement_kva_val) + (nb_h_dep_restants_actuel * taxe_puissance_annuelle_val)
-                            
-                            # Coût 2 : Abo optimal + Dépassements restants (après batterie)
-                            # On retrouve le coût des dépassements pour l'abo optimal
-                            # gain_ecretage_optimal = (g_fixe_mensuel - c_dep_mensuel)
-                            # Donc c_dep_annuel = (abo_init - abo_opt)*prix - revenu_ecretage
-                            cout_dep_opt_annuel = max(0, ((abonnement_val_val - nouvel_abo_propose) * cout_abonnement_kva_val) - revenu_ecretage)
-                            cout_annuel_optimal = (nouvel_abo_propose * cout_abonnement_kva_val) + cout_dep_opt_annuel
-                            
-                            st.write(f"📉 **Coûts annuels de puissance (Abonnement + Dépassements) :**")
-                            st.write(f"❌ Avec abonnement actuel et lissage de pics : {int(cout_annuel_actuel):,} {devise_val}/an".replace(",", " "))
-                            st.write(f"✅ Avec nouvel abonnement et lissage de pics : {int(cout_annuel_optimal):,} {devise_val}/an".replace(",", " "))
-                        else: # Suisse
-                            st.write(f"👉 Économies annuelles sur les frais de pointe : {int(revenu_ecretage):,} {devise_val}/an".replace(",", " "))
-                            
-                            st.write("---")
-                            # Coût 1 : Pic mensuel actuel (somme sur 12 mois) + Abo
-                            # Pour la suisse, frais_dep_init est déjà la somme des pics * taxe
-                            # Le gain revenu_ecretage est la somme des (pic_init - pic_net) * taxe
-                            cout_annuel_actuel = (abonnement_val_val * cout_abonnement_kva_val) + (frais_dep_init - revenu_ecretage)
-                            # Pas d'abonnement optimal calculé pour la suisse, on montre juste le gain
-                            st.write(f"📉 **Coûts annuels de puissance :**")
-                            st.write(f"❌ Sans batterie : {int((abonnement_val_val * cout_abonnement_kva_val) + frais_dep_init):,} {devise_val}/an".replace(",", " "))
-                            st.write(f"✅ Avec batterie et lissage : {int(cout_annuel_actuel):,} {devise_val}/an".replace(",", " "))
-                        
-                        st.write(f"ℹ️ *Lissage progressif : 50% Batterie / 50% Réseau*")
-                    if autoriser_services_val:
-                        st.write(f"**Revenu Services Systèmes :** {int(revenu_services):,} {devise_val}".replace(",", " "))
-                    st.write(f"**Frais de maintenance (OPEX) :** -{int((best_pv_total * opex_pv_unit_val) + (best_capa_batt * opex_batt_unit_val)):,} {devise_val}".replace(",", " "))
+            # --- DÉTAIL DES REVENUS ANNUELS (DÉPLACÉ ICI) ---
+            with st.expander("📊 Détail des revenus annuels", expanded=False):
+                col_exp1, col_exp2 = st.columns(2)
                 
-                st.write("---")
-                st.write(f"**Total Gain Annuel Net :** {int(best_gain_annuel):,} {devise_val}".replace(",", " "))
+                with col_exp1:
+                    # Économies Autoconsommation
+                    if "location" in scénario_investissement_val:
+                        label_auto = "Vente au locataire"
+                        val_auto = auto_temp_kwh * prix_revente_locataire_val
+                    elif autoriser_prix_dynamiques_val:
+                        label_auto = "Économies Autoconsommation"
+                        # On recalcule la part économie dynamique (brut - surplus - services - ecretage)
+                        val_auto = (best_gain_annuel_brut - (best_surplus_config * prix_vente_val) - revenu_ecretage - revenu_services)
+                        if autoriser_arbitrage_val: # Si arbitrage activé en dynamique
+                            val_auto = val_auto # Déjà inclus
+                    else:
+                        label_auto = "Économies Autoconsommation"
+                        val_auto = auto_temp_kwh * prix_achat_val
+                    
+                    st.write(f"**{label_auto} :** {int(val_auto):,} {devise_val}".replace(",", " "))
+                    
+                    # Vente Surplus
+                    val_surplus = best_surplus_config * prix_vente_val
+                    st.write(f"**Vente Surplus Solaire :** {int(val_surplus):,} {devise_val}".replace(",", " "))
+                    
+                    # Arbitrage (si activé et non dynamique car déjà dans auto)
+                    if autoriser_arbitrage_val and not autoriser_prix_dynamiques_val:
+                        val_arb = total_charge_reseau * (tarif_hp - prix_hc_val)
+                        st.write(f"**Arbitrage tarifaire :** {int(val_arb):,} {devise_val}".replace(",", " "))
+                        
+                    # Services Systèmes
+                    if autoriser_services_val:
+                        st.write(f"**Services Systèmes :** {int(revenu_services):,} {devise_val}".replace(",", " "))
+
+                    # OPEX (en négatif)
+                    st.write(f"**Coûts opérationnels (Maintenance) :** -{int(opex_annuel):,} {devise_val}".replace(",", " "))
+                
+                with col_exp2:
+                    if autoriser_ecretage_val:
+                        if st.session_state.get("pays_selectionne") == "France":
+                            st.markdown("#### **⚡ Gain par lissage de pointe sur abonnement actuel**")
+                            # On s'assure que abonnement_annuel_val est bien passé
+                            if 'abonnement_annuel_val' not in locals() or abonnement_annuel_val == 0:
+                                # Tentative de récupération via le calcul direct si manquant
+                                if type_tarif_val == "Tarif bleu particuliers":
+                                    prices_bleu_res_hc = {3: 0, 6: 141.60, 9: 176.16, 12: 209.16, 15: 239.88, 18: 271.80, 24: 340.20, 30: 402.36, 36: 465.00}
+                                    abonnement_annuel_val = prices_bleu_res_hc.get(abonnement_val_val, 0)
+                                elif type_tarif_val == "Tarif bleu pro":
+                                    if option_tarif_val == "Base":
+                                        prices_bleu_non_res_base = {3: 134.04, 6: 166.92, 9: 198.60, 12: 230.28, 15: 261.48, 18: 291.60, 24: 357.36, 30: 422.52, 36: 487.20}
+                                        abonnement_annuel_val = prices_bleu_non_res_base.get(abonnement_val_val, 0)
+                                    else:
+                                        prices_bleu_non_res_hc = {6: 167.40, 9: 200.16, 12: 233.76, 15: 265.68, 18: 299.04, 24: 371.40, 30: 436.32, 36: 501.84}
+                                        abonnement_annuel_val = prices_bleu_non_res_hc.get(abonnement_val_val, 0)
+                                elif type_tarif_val == "Tarif jaune":
+                                    if "Longue Utilisation" in option_tarif_val:
+                                        abonnement_annuel_val = 38.27 * abonnement_val_val
+                                    else:
+                                        abonnement_annuel_val = 26.44 * abonnement_val_val
+
+                            st.write(f"👉 Abonnement initial : {int(abonnement_val_val)} kVA")
+                            st.write(f"👉 Puissance de pointe : {p_max_init_annuel:.1f} kW")
+                            st.write(f"👉 Frais liés au dépassement de pointe : {int(nb_h_dep_init_total * taxe_puissance_annuelle_val):,} {devise_val}")
+                            st.write(f"👉 Nouvelle pointe moyenne (PV+Stockage) : {p_max_net_annuel:.1f} kW")
+                            st.write(f"👉 Économies sur les frais de dépassement : {int(revenu_ecretage):,} {devise_val}/an")
+                            
+                            # Logique d'optimisation économique du nouvel abonnement (Arbitrage entre coût abonnement et frais de dépassement)
+                            def calculer_cout_abo_local(seuil, type_t, opt_t):
+                                if type_t == "Tarif bleu particuliers":
+                                    prices = {3: 0, 6: 141.60, 9: 176.16, 12: 209.16, 15: 239.88, 18: 271.80, 24: 340.20, 30: 402.36, 36: 465.00}
+                                    return prices.get(seuil, seuil * (prices[36]/36))
+                                elif type_t == "Tarif bleu pro":
+                                    if opt_t == "Base":
+                                        prices = {3: 134.04, 6: 166.92, 9: 198.60, 12: 230.28, 15: 261.48, 18: 291.60, 24: 357.36, 30: 422.52, 36: 487.20}
+                                        return prices.get(seuil, seuil * (prices[36]/36))
+                                    else:
+                                        prices = {6: 167.40, 9: 200.16, 12: 233.76, 15: 265.68, 18: 299.04, 24: 371.40, 30: 436.32, 36: 501.84}
+                                        return prices.get(seuil, seuil * (prices[36]/36))
+                                elif type_t == "Tarif jaune":
+                                    if "Longue Utilisation" in opt_t:
+                                        return 38.27 * seuil
+                                    else:
+                                        return 26.44 * seuil
+                                return 0
+
+                            # On teste plusieurs paliers d'abonnement pour trouver le plus rentable
+                            seuils_a_tester = [s for s in seuils_kva_complets if s <= max(seuils_kva_complets[0], math.ceil(p_max_init_annuel))]
+                            meilleur_cout_total = float('inf')
+                            abonnement_optimal = abonnement_val_val
+                            nb_h_dep_final_optimal = 0
+
+                            for s_test in seuils_a_tester:
+                                # Calcul des dépassements pour ce seuil avec le profil net (lissé par batterie)
+                                nb_h_dep_test = sum(1 for p_n in profil_net if p_n > s_test + 0.01)
+                                cout_abo_test = calculer_cout_abo_local(s_test, type_tarif_val, option_tarif_val)
+                                cout_total_test = cout_abo_test + (nb_h_dep_test * taxe_puissance_annuelle_val)
+                                
+                                if cout_total_test < meilleur_cout_total:
+                                    meilleur_cout_total = cout_total_test
+                                    abonnement_optimal = s_test
+                                    nb_h_dep_final_optimal = nb_h_dep_test
+
+                            st.write(f"👉 Nouvel abonnement optimal conseillé : {int(abonnement_optimal)} kVA")
+                            
+                            st.write(f"👉 **Gain annuel par lissage de pic avec abonnement actuel : {int(revenu_ecretage):,} {devise_val}/an**")
+                            
+                            # Calcul du coût de l'abonnement actuel et du nouvel abonnement
+                            cout_abo_final_fixe = calculer_cout_abo_local(abonnement_optimal, type_tarif_val, option_tarif_val)
+                            cout_abo_init_fixe = calculer_cout_abo_local(abonnement_val_val, type_tarif_val, option_tarif_val)
+                            
+                            if 'abonnement_annuel_val' not in locals() or abonnement_annuel_val == 0:
+                                abonnement_annuel_val = cout_abo_init_fixe
+                            
+                            # Coût de l'abonnement initial incluant les dépassements initiaux (AVANT lissage par batterie)
+                            cout_init_total = abonnement_annuel_val + (nb_h_dep_init_total * taxe_puissance_annuelle_val)
+                            
+                            # Coût du nouvel abonnement incluant les dépassements résiduels optimisés (APRÈS lissage par batterie)
+                            cout_final_total = cout_abo_final_fixe + (nb_h_dep_final_optimal * taxe_puissance_annuelle_val)
+                            
+                            st.markdown("#### **📈 Gain par modification d'abonnement :**")
+                            st.write(f"👉 Coût annuel abonnement initial + frais de dépassement : {int(cout_init_total):,} {devise_val}/an".replace(",", " "))
+                            st.write(f"👉 Coût annuel nouvel abonnement optimisé + frais de dépassement : {int(cout_final_total):,} {devise_val}/an".replace(",", " "))
+                            
+                            gain_passage = max(0, cout_init_total - cout_final_total)
+                            st.write(f"👉 **Gain annuel par changement d'abonnement : {int(gain_passage):,} {devise_val}/an**")
+                        else:
+                            st.write(f"👉 Pic de puissance initial : {p_max_init_annuel:.1f} kW")
+                            st.write(f"👉 Pic de puissance après stockage : {p_max_net_annuel:.1f} kW")
+                            st.write(f"👉 Économies sur taxe de puissance : {int(revenu_ecretage):,} {devise_val}/an")
+                    else:
+                        st.info("💡 L'option d'écrêtage de pointe n'est pas activée.")
 
             # --- NOUVEAU : GRAPHIQUE DE SYNTHÈSE DES SIMULATIONS ---
             st.write("---")
@@ -2802,8 +2393,7 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                     for i in range(8760):
                         prod_h_ideal[i] += item['profil'][i] * p_pan_ideal
                 
-                stock_sol_i = 0.0
-                stock_res_i = 0.0
+                soc_i = 0.0
                 cap_utile_i = best_capa_batt * DOD
                 p_batt_max_i = best_capa_batt * C_RATE
                 liste_soc_i = []
@@ -2811,72 +2401,43 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                 liste_charge_res_i = []
                 liste_decharge_i = []
                 
-                # Calcul du surplus solaire attendu pour chaque jour (pour l'anticipation)
-                surplus_journalier_attendu_i = []
-                for j in range(365):
-                    s_jour = 0
-                    for h in range(24):
-                        idx = j*24 + h
-                        s_jour += max(0, prod_h_ideal[idx] - courbe_conso_val_calc[idx])
-                    surplus_journalier_attendu_i.append(s_jour)
-                
                 for h_idx, (ph, ch) in enumerate(zip(prod_h_ideal, courbe_conso_val_calc)):
                     c_charge = 0
                     c_charge_res = 0
                     c_decharge = 0
                     
-                    prix_h = vecteur_prix_achat[h_idx]
                     h_jour = h_idx % 24
-                    j_idx = h_idx // 24
-                    est_prix_bas = False
-                    if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val):
-                        prix_moyen = sum(vecteur_prix_achat) / 8760
-                        seuil_charge = prix_moyen * 0.8
-                        est_prix_bas = prix_h < seuil_charge
-                        
-                        # Anticipation solaire STRICTE
-                        if est_prix_bas and 0 <= h_jour <= 6:
-                            surplus_prevu = surplus_journalier_attendu_i[j_idx]
-                            place_pour_reseau = max(0, cap_utile_i - surplus_prevu)
-                            if (stock_sol_i + stock_res_i) >= place_pour_reseau:
-                                est_prix_bas = False
+                    est_hc = False
+                    if hc_start_val < hc_end_val:
+                        est_hc = hc_start_val <= h_jour < hc_end_val
+                    else:
+                        est_hc = h_jour >= hc_start_val or h_jour < hc_end_val
 
-                    # --- PRIORITÉ 1 : LE SOLAIRE ---
-                    charge_sol_graph = 0
-                    dech_sol_graph = 0
                     if ph >= ch:
                         dispo = ph - ch
-                    
-                        # Charger la batterie avec le surplus solaire
-                        charge = min(dispo, (cap_utile_i - (stock_sol_i + stock_res_i)) / RENDEMENT_CHARGE, p_batt_max_i)
-                        stock_sol_i += charge * RENDEMENT_CHARGE
+                        charge = min(dispo, (cap_utile_i - soc_i) / RENDEMENT_CHARGE, p_batt_max_i)
+                        soc_i += charge * RENDEMENT_CHARGE
                         c_charge = charge
-                        charge_sol_graph = charge
                     else:
                         besoin = ch - ph
-                    
-                        # Décharger la batterie pour couvrir le besoin
-                        total_s = stock_sol_i + stock_res_i
-                        decharge_t = min(besoin / RENDEMENT_DECHARGE, total_s, p_batt_max_i)
-                    
-                        if total_s > 0:
-                            r_sol = stock_sol_i / total_s
-                            r_res = stock_res_i / total_s
-                            stock_sol_i -= decharge_t * r_sol
-                            stock_res_i -= decharge_t * r_res
-                    
-                        c_decharge = decharge_t * RENDEMENT_DECHARGE
-                        dech_sol_graph = decharge_t
-
-                    # --- PRIORITÉ 2 : L'ARBITRAGE RÉSEAU ---
-                    if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val) and est_prix_bas and (stock_sol_i + stock_res_i) < cap_utile_i:
-                        p_dispo_batt = p_batt_max_i - (charge_sol_graph if ph >= ch else dech_sol_graph)
-                        if p_dispo_batt > 0:
-                            charge_res = min(p_dispo_batt, (cap_utile_i - (stock_sol_i + stock_res_i)) / RENDEMENT_CHARGE)
-                            stock_res_i += charge_res * RENDEMENT_CHARGE
+                        
+                        # Logique d'optimisation d'écrêtage (Peak Shaving) :
+                        # Au lieu de décharger tout le besoin, on ne décharge que 50% pour lisser l'appel réseau
+                        besoin_a_couvrir = besoin
+                        if autoriser_ecretage_val:
+                            besoin_a_couvrir = besoin * 0.5
+                            
+                        decharge = min(besoin_a_couvrir / RENDEMENT_DECHARGE, soc_i, p_batt_max_i)
+                        soc_i -= decharge
+                        c_decharge = decharge * RENDEMENT_DECHARGE
+                        
+                        # Arbitrage HC
+                        if autoriser_arbitrage_val and est_hc and soc_i < cap_utile_i:
+                            charge_res = min(p_batt_max_i, (cap_utile_i - soc_i) / RENDEMENT_CHARGE)
+                            soc_i += charge_res * RENDEMENT_CHARGE
                             c_charge_res = charge_res
 
-                    liste_soc_i.append(stock_sol_i + stock_res_i)
+                    liste_soc_i.append(soc_i)
                     liste_charge_i.append(c_charge)
                     liste_charge_res_i.append(c_charge_res)
                     liste_decharge_i.append(c_decharge)
@@ -2894,10 +2455,7 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                 pct_decharge_journalier = (total_decharge_i / 365) / best_capa_batt * 100 if best_capa_batt > 0 else 0
                 
                 # Taux de remplissage moyen (moyenne horaire du SOC / capacité nominale)
-                if best_capa_batt > 0 and len(liste_soc_i) > 0:
-                    remplissage_moyen_i = (sum(liste_soc_i) / len(liste_soc_i)) / best_capa_batt * 100
-                else:
-                    remplissage_moyen_i = 0
+                remplissage_moyen_i = (sum(liste_soc_i) / len(liste_soc_i)) / best_capa_batt * 100 if best_capa_batt > 0 else 0
 
                 c_sol1, c_sol2, c_sol3, c_sol4 = st.columns(4)
                 c_sol1.metric("Cycles complets / an", f"{int(round(cycles_complets_i)):,}".replace(",", " "), help="Nombre de fois où la capacité totale de la batterie est déchargée en une année (Total décharge / Capacité nominale).")
@@ -2907,72 +2465,28 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                     if autoriser_prix_dynamiques_val:
                         # Gain Arbitrage Dynamique
                         gain_annuel_brut_i = 0
-                        s_temp_sim_sol = 0.0
-                        s_temp_sim_res = 0.0
+                        s_temp_sim = 0.0
                         cap_utile_sim = best_capa_batt * DOD
                         p_batt_max_sim = best_capa_batt * C_RATE
-                        
-                        # Surplus journalier attendu
-                        surplus_journalier_sim = []
-                        for j in range(365):
-                            s_j = 0
-                            for h in range(24):
-                                idx_j = j*24 + h
-                                s_j += max(0, prod_h_ideal[idx_j] - courbe_conso_val_calc[idx_j])
-                            surplus_journalier_sim.append(s_j)
-
                         for h_idx, (ph, ch) in enumerate(zip(prod_h_ideal, courbe_conso_val_calc)):
                             prix_h = vecteur_prix_achat[h_idx]
-                            h_j = h_idx % 24
-                            j_j = h_idx // 24
-                            
-                            # PRIORITÉ 1 : SOLAIRE
-                            charge_s = 0
-                            dech_s = 0
                             if ph >= ch:
                                 gain_annuel_brut_i += ch * prix_h
                                 dispo = ph - ch
-                                charge_s = min(dispo, (cap_utile_sim - (s_temp_sim_sol + s_temp_sim_res)) / RENDEMENT_CHARGE, p_batt_max_sim)
-                                s_temp_sim_sol += charge_s * RENDEMENT_CHARGE
+                                charge = min(dispo, (cap_utile_sim - s_temp_sim) / RENDEMENT_CHARGE, p_batt_max_sim)
+                                s_temp_sim += charge * RENDEMENT_CHARGE
                             else:
-                                auto_h = ph
                                 besoin = ch - ph
-                                total_s_sim = s_temp_sim_sol + s_temp_sim_res
-                                
-                                # --- LOGIQUE DE LISSAGE (50% Batterie / 50% Réseau) ---
-                                if autoriser_ecretage_val:
-                                    # Nouveau : On couvre 50% du besoin peu importe le seuil
-                                    besoin_a_couvrir = besoin * 0.5
-                                    decharge_t = min(besoin_a_couvrir / RENDEMENT_DECHARGE, total_s_sim, p_batt_max_sim)
-                                else:
-                                    decharge_t = min(besoin / RENDEMENT_DECHARGE, total_s_sim, p_batt_max_sim)
-                                
-                                if total_s_sim > 0:
-                                    r_sol = s_temp_sim_sol / total_s_sim
-                                    r_res = s_temp_sim_res / total_s_sim
-                                    s_temp_sim_sol -= decharge_t * r_sol
-                                    s_temp_sim_res -= decharge_t * r_res
-                                dech_s = decharge_t
-                                auto_h += decharge_t * RENDEMENT_DECHARGE
-                                gain_annuel_brut_i += auto_h * prix_h
-                            
-                            # PRIORITÉ 2 : ARBITRAGE
-                            if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val):
+                                decharge = min(besoin / RENDEMENT_DECHARGE, s_temp_sim, p_batt_max_sim)
+                                s_temp_sim -= decharge
+                                gain_annuel_brut_i += (ph + decharge * RENDEMENT_DECHARGE) * prix_h
                                 prix_moyen = sum(vecteur_prix_achat) / 8760
-                                if prix_h < (prix_moyen * 0.8):
-                                    est_prix_bas_sim = True
-                                    if 0 <= h_j <= 6:
-                                        place_r = max(0, cap_utile_sim - surplus_journalier_sim[j_j])
-                                        if (s_temp_sim_sol + s_temp_sim_res) >= place_r:
-                                            est_prix_bas_sim = False
-                                    
-                                    if est_prix_bas_sim:
-                                        p_dispo = p_batt_max_sim - (charge_s if ph >= ch else dech_s)
-                                        if p_dispo > 0:
-                                            charge_r = min(p_dispo, (cap_utile_sim - (s_temp_sim_sol + s_temp_sim_res)) / RENDEMENT_CHARGE)
-                                            s_temp_sim_res += charge_r * RENDEMENT_CHARGE
-                                            gain_annuel_brut_i -= charge_r * prix_h
-
+                                seuil_charge = prix_moyen * 0.8
+                                if prix_h < seuil_charge and s_temp_sim < cap_utile_sim:
+                                    charge_res = min(p_batt_max_sim, (cap_utile_sim - s_temp_sim) / RENDEMENT_CHARGE)
+                                    s_temp_sim += charge_res * RENDEMENT_CHARGE
+                                    gain_annuel_brut_i -= charge_res * prix_h
+                        # On compare au gain PV seul pour isoler le gain batterie
                         # Gain PV seul
                         gain_pv_seul = 0
                         for idx, (p, c) in enumerate(zip(prod_h_ideal, courbe_conso_val_calc)):
@@ -3018,15 +2532,12 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                     marker_color="#E74C3C"
                 ))
                 
-                # S'assurer que les axes sont bien définis
-                # fig_sol_i.update_xaxes(range=[0.5, 365.5], title="Jour de l'année")
-                
                 fig_sol_i.update_layout(
                     barmode='relative',
                     height=400,
                     margin=dict(l=0, r=0, t=0, b=0),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    xaxis=dict(title="Jour de l'année", range=[0.5, 365.5]),
+                    xaxis_title="Jour de l'année",
                     yaxis_title="kWh",
                     hovermode="x unified"
                 )
@@ -3058,107 +2569,63 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
             
             if best_capa_batt > 0:
                 soc_f = 0.0
-                # Pour le graphique de superposition, on doit aussi suivre l'origine du stock pour être cohérent
-                stock_sol_f = 0.0
-                stock_res_f = 0.0
                 cap_utile_f = best_capa_batt * DOD
                 p_batt_max_f = best_capa_batt * C_RATE
                 ch_plot = []
                 ch_res_plot = []
                 de_plot = []
-                
-                # Calcul du surplus solaire attendu pour chaque jour
-                surplus_journalier_attendu_f = []
-                for j in range(365):
-                    s_jour = 0
-                    for h in range(24):
-                        idx = j*24 + h
-                        s_jour += max(0, p_plot[idx] - courbe_conso_val_calc[idx])
-                    surplus_journalier_attendu_f.append(s_jour)
-                
+                soutirage_plot = []
                 for h_idx, (ph, ch) in enumerate(zip(p_plot, courbe_conso_val_calc)):
                     charge_f = 0
                     charge_res_f = 0
                     dech_f = 0
+                    soutirage_f = 0
                     
-                    prix_h = vecteur_prix_achat[h_idx]
                     h_jour = h_idx % 24
-                    j_idx = h_idx // 24
-                    est_prix_bas = False
-                    if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val):
-                        prix_moyen = sum(vecteur_prix_achat) / 8760
-                        seuil_charge = prix_moyen * 0.8
-                        est_prix_bas = prix_h < seuil_charge
-                        
-                        # Anticipation solaire STRICTE
-                        if est_prix_bas and 0 <= h_jour <= 6:
-                            surplus_prevu = surplus_journalier_attendu_f[j_idx]
-                            place_pour_reseau = max(0, cap_utile_f - surplus_prevu)
-                            if (stock_sol_f + stock_res_f) >= place_pour_reseau:
-                                est_prix_bas = False
+                    est_hc = False
+                    if hc_start_val < hc_end_val:
+                        est_hc = hc_start_val <= h_jour < hc_end_val
+                    else:
+                        est_hc = h_jour >= hc_start_val or h_jour < hc_end_val
 
-                    # --- PRIORITÉ 1 : LE SOLAIRE ---
-                    charge_sol_f = 0
-                    dech_sol_f = 0
                     if ph >= ch:
-                        # Consommation directe du solaire
-                        dispo_solaire = ph - ch
-                        
-                        # Charger la batterie avec le surplus solaire
-                        charge_f = min(dispo_solaire, (cap_utile_f - (stock_sol_f + stock_res_f)) / RENDEMENT_CHARGE, p_batt_max_f)
-                        stock_sol_f += charge_f * RENDEMENT_CHARGE
-                        charge_sol_f = charge_f
+                        dispo = ph - ch
+                        charge_f = min(dispo, (cap_utile_f - soc_f) / RENDEMENT_CHARGE, p_batt_max_f)
+                        soc_f += charge_f * RENDEMENT_CHARGE
+                        soutirage_f = 0
                     else:
                         besoin = ch - ph
                         
-                        # Décharger la batterie pour couvrir le besoin
-                        total_s = stock_sol_f + stock_res_f
-                        
-                        # --- LOGIQUE DE LISSAGE (PEAK SHAVING INTELLIGENT) ---
+                        # Logique d'optimisation d'écrêtage (Peak Shaving) :
+                        # Au lieu de décharger tout le besoin, on ne décharge que 50% pour lisser l'appel réseau
+                        besoin_a_couvrir = besoin
                         if autoriser_ecretage_val:
-                            # --- LOGIQUE DE LISSAGE (50% Batterie / 50% Réseau) ---
-                            # Nouveau : On couvre 50% du besoin peu importe le seuil
                             besoin_a_couvrir = besoin * 0.5
-                            dech_t = min(besoin_a_couvrir / RENDEMENT_DECHARGE, total_s, p_batt_max_f)
-                        else:
-                            dech_t = min(besoin / RENDEMENT_DECHARGE, total_s, p_batt_max_f)
+                            
+                        dech_f = min(besoin_a_couvrir / RENDEMENT_DECHARGE, soc_f, p_batt_max_f)
+                        soc_f -= dech_f
+                        dech_f = dech_f * RENDEMENT_DECHARGE
                         
-                        if total_s > 0:
-                            r_sol = stock_sol_f / total_s
-                            r_res = stock_res_f / total_s
-                            stock_sol_f -= dech_t * r_sol
-                            stock_res_f -= dech_t * r_res
+                        # Arbitrage HC
+                        if autoriser_arbitrage_val and est_hc and soc_f < cap_utile_f:
+                            charge_res_f = min(p_batt_max_f, (cap_utile_f - soc_f) / RENDEMENT_CHARGE)
+                            soc_f += charge_res_f * RENDEMENT_CHARGE
                         
-                        dech_f = dech_t * RENDEMENT_DECHARGE
-                        dech_sol_f = dech_t
-
-                    # --- PRIORITÉ 2 : L'ARBITRAGE RÉSEAU ---
-                    if (autoriser_arbitrage_val or autoriser_prix_dynamiques_val) and est_prix_bas and (stock_sol_f + stock_res_f) < cap_utile_f:
-                        p_dispo_batt = p_batt_max_f - (charge_sol_f if ph >= ch else dech_sol_f)
-                        if p_dispo_batt > 0:
-                            charge_res_f = min(p_dispo_batt, (cap_utile_f - (stock_sol_f + stock_res_f)) / RENDEMENT_CHARGE)
-                            stock_res_f += charge_res_f * RENDEMENT_CHARGE
+                        soutirage_f = besoin - dech_f + charge_res_f
 
                     ch_plot.append(charge_f)
                     ch_res_plot.append(charge_res_f)
                     de_plot.append(dech_f)
-            else:
-                ch_plot = [0.0] * 8760
-                ch_res_plot = [0.0] * 8760
-                de_plot = [0.0] * 8760
-        else:
-            p_plot = [0.0] * 8760
-            ch_plot = [0.0] * 8760
-            ch_res_plot = [0.0] * 8760
-            de_plot = [0.0] * 8760
+                    soutirage_plot.append(soutirage_f)
 
         df_total = pd.DataFrame({
             "Temps": dates,
             "Production PV (kW)": p_plot,
             "Consommation (kW)": courbe_conso_val_calc,
             "Charge Batterie Solaire (kW)": ch_plot,
-            "Charge Batterie Réseau (kW)": ch_res_plot if 'ch_res_plot' in locals() and len(ch_res_plot) == 8760 else [0.0]*8760,
-            "Décharge Batterie (kW)": de_plot
+            "Charge Batterie Réseau (kW)": ch_res_plot,
+            "Décharge Batterie (kW)": de_plot,
+            "Soutirage Réseau (kW)": soutirage_plot
         })
         
         # Sélection du mois avec navigation fléchée DISCRÈTE ET À GAUCHE
@@ -3193,17 +2660,7 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
         df_filtre = df_total[df_total['Temps'].dt.month == (st.session_state.mois_idx + 1)].copy()
         
         # Calcul de la courbe d'autoconsommation pour le hachurage
-        df_filtre["Autoconsommation (kW)"] = df_filtre[["Production PV (kW)","Consommation (kW)"]].min(axis=1)
-
-        # Calcul des flux nets (Achat/Vente sur le réseau)
-        # On achète quand Consommation + Charge Batterie > Production + Décharge Batterie
-        # On vend quand Production + Décharge Batterie > Consommation + Charge Batterie
-        df_filtre["Flux Net (kW)"] = (df_filtre["Consommation (kW)"] + df_filtre["Charge Batterie Solaire (kW)"] + df_filtre["Charge Batterie Réseau (kW)"]) - (df_filtre["Production PV (kW)"] + df_filtre["Décharge Batterie (kW)"])
-        df_filtre["Achat Réseau (kW)"] = df_filtre["Flux Net (kW)"].apply(lambda x: max(0, x))
-        df_filtre["Vente Réseau (kW)"] = df_filtre["Flux Net (kW)"].apply(lambda x: max(0, -x))
-        
-        # Courbe de Soutirage Réseau (Grid Withdrawal) : ce que le bâtiment tire réellement au réseau
-        df_filtre["Soutirage Réseau (kW)"] = df_filtre["Achat Réseau (kW)"]
+        df_filtre["Autoconsommation (kW)"] = df_filtre[["Production PV (kW)", "Consommation (kW)"]].min(axis=1)
 
         fig_superp = go.Figure()
 
@@ -3216,58 +2673,17 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
             fill='none'
         ))
 
-        # Courbe de Soutirage Réseau (Gris foncé, lissée)
-        fig_superp.add_trace(go.Scatter(
-            x=df_filtre["Temps"],
-            y=df_filtre["Soutirage Réseau (kW)"],
-            name="Soutirage Réseau (kW)",
-            line=dict(color='#2C3E50', width=2, shape='spline'),
-            fill='none'
-        ))
-
-        # Marqueurs Achat/Vente
-        fig_superp.add_trace(go.Scatter(
-            x=df_filtre[df_filtre["Achat Réseau (kW)"] > 0.1]["Temps"],
-            y=df_filtre[df_filtre["Achat Réseau (kW)"] > 0.1]["Consommation (kW)"],
-            mode='markers',
-            name="Achat Réseau",
-            marker=dict(symbol="triangle-up", color="#E74C3C", size=5),
-            hovertemplate="Achat: %{text} kW",
-            text=[f"{v:.1f}" for v in df_filtre[df_filtre["Achat Réseau (kW)"] > 0.1]["Achat Réseau (kW)"]]
-        ))
-
-        fig_superp.add_trace(go.Scatter(
-            x=df_filtre[df_filtre["Vente Réseau (kW)"] > 0.1]["Temps"],
-            y=df_filtre[df_filtre["Vente Réseau (kW)"] > 0.1]["Production PV (kW)"],
-            mode='markers',
-            name="Vente Réseau (Surplus)",
-            marker=dict(symbol="triangle-down", color="#F1C40F", size=5),
-            hovertemplate="Vente: %{text} kW",
-            text=[f"{v:.1f}" for v in df_filtre[df_filtre["Vente Réseau (kW)"] > 0.1]["Vente Réseau (kW)"]]
-        ))
-
-        # Ajout de la ligne d'abonnement
+        # Ajout de la ligne de puissance souscrite (La Pointe)
         fig_superp.add_hline(
-            y=abonnement_val_val,
+            y=puissance_intro_kw_val,
             line_dash="dash",
             line_color="red",
-            annotation_text="Limite d'abonnement",
+            annotation_text="Limite de raccordement",
             annotation_position="bottom right"
         )
-        
-        # Ajout de la ligne d'objectif d'écrêtage si active (France)
-        if st.session_state.get("pays_selectionne") == "France" and autoriser_ecretage_val and 'nouvel_abo_propose' in locals():
-            fig_superp.add_hline(
-                y=nouvel_abo_propose,
-                line_dash="dot",
-                line_color="orange",
-                annotation_text=f"Abonnement optimal ({int(nouvel_abo_propose)} kVA)",
-                annotation_position="top right"
-            )
 
         # Mise en évidence des dépassements de pointe
-        seuil_alerte = nouvel_abo_propose if (st.session_state.get("pays_selectionne") == "France" and autoriser_ecretage_val and 'nouvel_abo_propose' in locals()) else abonnement_val_val
-        df_depassement = df_filtre[df_filtre["Consommation (kW)"] > seuil_alerte].copy()
+        df_depassement = df_filtre[df_filtre["Consommation (kW)"] > puissance_intro_kw_val].copy()
         if not df_depassement.empty:
             fig_superp.add_trace(go.Scatter(
                 x=df_depassement["Temps"],
@@ -3299,6 +2715,15 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
             fill='none'
         ))
 
+        # Puissance soutirée du réseau (Rouge brique / Orange foncé)
+        fig_superp.add_trace(go.Scatter(
+            x=df_filtre["Temps"],
+            y=df_filtre["Soutirage Réseau (kW)"],
+            name="Soutirage Réseau (kW)",
+            line=dict(color='#E67E22', width=2),
+            fill='none'
+        ))
+
         # AJOUT DES PRIX DYNAMIQUES SUR L'AXE Y2
         if autoriser_prix_dynamiques_val:
             fig_superp.add_trace(go.Scatter(
@@ -3321,7 +2746,7 @@ if st.session_state.get("simulation_lancee", False) and "params_valides" in st.s
                 fill='none'
             ))
             # Charge Batterie Réseau (BLEU)
-            if autoriser_arbitrage_val or autoriser_prix_dynamiques_val:
+            if autoriser_arbitrage_val:
                 fig_superp.add_trace(go.Scatter(
                     x=df_filtre["Temps"],
                     y=df_filtre["Charge Batterie Réseau (kW)"],
