@@ -301,7 +301,7 @@ st.sidebar.header("🏢 Informations du Bâtiment")
 
 # 1. Adresse avec Auto-complétion et état
 if "adresse_validee" not in st.session_state:
-    st.session_state.adresse_validee = "1 rue du cimetiere 68730 blotzheim"
+    st.session_state.adresse_validee = None
 
 # CSS pour enlever le liseré rouge de Streamlit sur la searchbox
 st.markdown("""
